@@ -73,8 +73,10 @@ fun HomeScreen(vm: MainViewModel) {
     val counts by vm.counts.collectAsState()
     val lastScan by vm.lastScan.collectAsState()
     val saveRaw by vm.saveRaw.collectAsState()
+    val noWifi by vm.noWifi.collectAsState()
     HomeContent(
         device = dev, counts = counts, lastScan = lastScan, saveRaw = saveRaw, version = vm.version,
+        noWifi = noWifi, onNoWifi = vm::setNoWifi,
         onRecommended = { vm.run(Action.RECOMMENDED) },
         onCustom = { vm.run(Action.CUSTOM) },
         onRestore = { vm.run(Action.RESTORE) },
@@ -97,6 +99,8 @@ fun HomeContent(
     onRescan: () -> Unit,
     onReports: () -> Unit,
     onSaveRaw: (Boolean) -> Unit,
+    noWifi: Boolean = false,
+    onNoWifi: (Boolean) -> Unit = {},
 ) {
     var menu by remember { mutableStateOf(false) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -109,6 +113,11 @@ fun HomeContent(
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Reports") }, onClick = { menu = false; onReports() })
                         DropdownMenuItem(
+                            text = { Text("Work without Wi-Fi") },
+                            trailingIcon = { Checkbox(checked = noWifi, onCheckedChange = null) },
+                            onClick = { menu = false; onNoWifi(!noWifi) },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Save raw output for bug reports") },
                             trailingIcon = { Checkbox(checked = saveRaw, onCheckedChange = null) },
                             onClick = { onSaveRaw(!saveRaw) },
@@ -119,6 +128,11 @@ fun HomeContent(
             }
             Spacer(Modifier.height(8.dp))
             PhoneCard(device, counts, lastScan)
+            if (noWifi) {
+                Spacer(Modifier.height(8.dp))
+                Text("Works without Wi-Fi. After a restart, it needs Wi-Fi once.", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary)
+            }
             Spacer(Modifier.height(20.dp))
 
             ActionCard(Icons.Filled.CheckCircle, "Recommended", "Remove safe junk. You check the list first.", primary = true, onClick = onRecommended)

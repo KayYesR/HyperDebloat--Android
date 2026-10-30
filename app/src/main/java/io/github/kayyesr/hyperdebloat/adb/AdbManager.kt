@@ -48,6 +48,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             instance ?: synchronized(this) { instance ?: AdbManager(context.applicationContext).also { instance = it } }
 
         private const val DEVICE_NAME = "HyperDebloat"
+        const val LOCAL_PORT = 5555
     }
 
     private val _state = MutableStateFlow(State.CHECKING)
@@ -100,11 +101,52 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         return kp.private to cert
     }
 
-    /** Finds wireless debugging on this phone and connects. Blocking; call off the main thread. */
-    fun tryConnect(): Boolean {
+    /**
+     * "No Wi-Fi mode": the phone's ADB service also listens on 127.0.0.1:5555 (like `adb tcpip 5555`),
+     * so HyperDebloat stays reachable after Wi-Fi is turned off. Android resets this on every restart,
+     * so Wi-Fi is needed once per boot to switch it back on.
+     */
+    var noWifiMode: Boolean
+        get() = prefs.getBoolean("noWifiMode", false)
+        set(v) = prefs.edit().putBoolean("noWifiMode", v).apply()
+
+    /** True when the current connection is the local (no Wi-Fi) one. */
+    @Volatile var connectedLocally = false
+        private set
+
+    /** Connects to the local port. [authWaitSec] is how long to wait for the "Allow USB debugging?" answer. */
+    private fun connectLocal(authWaitSec: Long): Boolean {
+        setTimeout(authWaitSec, TimeUnit.SECONDS)
+        return try {
+            val ok = connect("127.0.0.1", LOCAL_PORT) || isConnected
+            connectedLocally = ok
+            ok
+        } catch (_: Exception) {
+            try { disconnect() } catch (_: Exception) { }
+            false
+        } finally {
+            setTimeout(20, TimeUnit.SECONDS)
+        }
+    }
+
+    /**
+     * Connects: first the local port (No Wi-Fi mode), then wireless debugging if [wireless] is allowed.
+     * Blocking; call off the main thread.
+     */
+    fun tryConnect(wireless: Boolean = true): Boolean {
         if (isConnected) { _state.value = State.CONNECTED; return true }
         _state.value = State.CHECKING
+        if (noWifiMode && connectLocal(20)) {
+            _state.value = State.CONNECTED; _lastError.value = ""
+            return true
+        }
+        if (!wireless) {
+            _state.value = State.NOT_REACHABLE
+            _lastError.value = "Wi-Fi is off."
+            return false
+        }
         return try {
+            connectedLocally = false
             val ok = autoConnect(context, 6000)
             _state.value = if (ok || isConnected) State.CONNECTED else State.NOT_REACHABLE
             if (_state.value == State.CONNECTED) { everPaired = true; _lastError.value = "" }
@@ -125,9 +167,48 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         }
     }
 
+    /**
+     * Turns on No Wi-Fi mode from a wireless debugging connection. The phone's ADB service restarts, and the
+     * phone may ask "Allow USB debugging?" once. Returns null on success, or the error text.
+     */
+    fun enableNoWifiMode(): String? {
+        if (connectedLocally && isConnected) { noWifiMode = true; return null }
+        if (!isConnected && !tryConnect()) return "Not connected."
+        try {
+            val s = openStream("tcpip:$LOCAL_PORT")
+            try { readLines(s) { } } catch (_: Exception) { }
+        } catch (e: Exception) {
+            return "The phone refused: ${e.message ?: e.javaClass.simpleName}"
+        }
+        lost()
+        noWifiMode = true
+        // The ADB service takes a moment to restart; then the phone may ask to allow this app (up to a minute).
+        val deadline = System.currentTimeMillis() + 75_000
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(1500)
+            if (connectLocal(60)) { _state.value = State.CONNECTED; return null }
+        }
+        noWifiMode = false
+        return "Could not connect without Wi-Fi. If the phone asked \"Allow USB debugging?\", tap Always allow and try again."
+    }
+
+    /** Turns No Wi-Fi mode off: the local port is closed (`adb usb`) and wireless debugging is used again. */
+    fun disableNoWifiMode() {
+        noWifiMode = false
+        if (connectedLocally && isConnected) {
+            try {
+                val s = openStream("usb:")
+                try { readLines(s) { } } catch (_: Exception) { }
+            } catch (_: Exception) { }
+            lost()
+        }
+        connectedLocally = false
+    }
+
     /** Marks the connection as lost (for example after Wireless debugging was switched off). */
     private fun lost() {
         try { disconnect() } catch (_: Exception) { }
+        connectedLocally = false
         _state.value = State.NOT_REACHABLE
     }
 

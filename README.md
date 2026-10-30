@@ -18,7 +18,13 @@ It reads every package and running process on **your** phone and rates each pack
 ## Requirements
 
 - Android 11 or newer (wireless debugging pairing does not exist on Android 10 and older; use the [Windows version](https://github.com/KayYesR/HyperDebloat) for those phones).
-- A Wi-Fi connection, so that wireless debugging can be switched on.
+- A Wi-Fi connection, so that wireless debugging can be switched on. Any network works, including another phone's hotspot; it does not need internet (but the debloat lists are downloaded when it has internet).
+
+### Without Wi-Fi
+
+Android only allows wireless debugging while the phone is connected to a Wi-Fi network as a client; its own hotspot does not count. The only tools that remove that limit need root ([nowifi-adb](https://github.com/iflyabd/nowifi-adb), [hotspotadb](https://github.com/droserasprout/io.drsr.hotspotadb)).
+
+Without root, HyperDebloat offers **Work without Wi-Fi** (⋮ menu): after connecting once over Wi-Fi, the phone's ADB service also listens on `127.0.0.1:5555` (the same as `adb tcpip 5555`, and the same idea as the TCP mode in [thedjchi's Shizuku](https://github.com/thedjchi/Shizuku/wiki/Features)). You can then turn Wi-Fi off. Android closes that port when the phone restarts, so Wi-Fi is needed once after each restart; HyperDebloat switches the mode back on by itself. While it is on, other devices on the same network can ask for ADB access too: the phone shows an "Allow USB debugging?" prompt, and you should only allow it when HyperDebloat asks.
 
 ## Install
 

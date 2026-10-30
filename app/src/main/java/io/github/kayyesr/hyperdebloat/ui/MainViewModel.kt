@@ -109,6 +109,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _saveRaw = MutableStateFlow(prefs.getBoolean("saveRaw", false))
     val saveRaw: StateFlow<Boolean> = _saveRaw
 
+    private val _noWifi = MutableStateFlow(adb.noWifiMode)
+    val noWifi: StateFlow<Boolean> = _noWifi
+
     private val working = AtomicBoolean(false)
     private val connecting = AtomicBoolean(false)
 
@@ -174,19 +177,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Works out which setup step is next, and connects when everything is in place. */
     fun refreshSetup() {
         if (working.get()) return
-        when {
-            !devOptionsOn() -> { _setupStep.value = SetupStep.DEV_OPTIONS; return }
-            !wifiConnected() -> { _setupStep.value = SetupStep.WIFI; return }
-        }
+        if (!devOptionsOn()) { _setupStep.value = SetupStep.DEV_OPTIONS; return }
         if (!connecting.compareAndSet(false, true)) return
         viewModelScope.launch {
             _checking.value = true
             try {
-                val ok = io { adb.tryConnect() }
+                val wifi = wifiConnected()
+                // No Wi-Fi mode is tried first; wireless debugging only when Wi-Fi is connected.
+                val ok = io { adb.tryConnect(wireless = wifi) }
                 if (ok) {
                     if (_screen.value == Screen.Setup) onConnected()
                 } else {
-                    _setupStep.value = if (adb.state.value == AdbManager.State.NOT_PAIRED) SetupStep.PAIR else SetupStep.WIRELESS_DEBUGGING
+                    _setupStep.value = when {
+                        !wifi -> SetupStep.WIFI
+                        adb.state.value == AdbManager.State.NOT_PAIRED -> SetupStep.PAIR
+                        else -> SetupStep.WIRELESS_DEBUGGING
+                    }
                     if (_screen.value == Screen.Home) _screen.value = Screen.Setup
                 }
             } finally {
@@ -212,7 +218,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun onConnected() {
-        if (connectPhone() != null) _screen.value = Screen.Home
+        if (connectPhone() == null) return
+        _screen.value = Screen.Home
+        _noWifi.value = adb.noWifiMode
+        when {
+            // Turned on before, but the phone restarted since: switch it back on quietly.
+            adb.noWifiMode && !adb.connectedLocally -> io { adb.enableNoWifiMode() }
+            !adb.noWifiMode && !prefs.getBoolean("noWifiOffered", false) -> {
+                prefs.edit().putBoolean("noWifiOffered", true).apply()
+                if (ask("Use without Wi-Fi?", "HyperDebloat can stay connected after you turn Wi-Fi off, until the phone restarts. " +
+                        "After a restart it needs Wi-Fi once again.\n\nYour phone may ask \"Allow USB debugging?\". Tap Always allow, " +
+                        "but only when HyperDebloat asks.", yes = "Turn on", no = "Not now")) setNoWifi(true)
+            }
+        }
+    }
+
+    /** Turns No Wi-Fi mode on or off (Home menu). */
+    fun setNoWifi(on: Boolean) {
+        if (!working.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            try {
+                if (on) {
+                    busy("Switching to no Wi-Fi")
+                    logger.line("If the phone asks \"Allow USB debugging?\", tap Always allow.")
+                    val err = io { adb.enableNoWifiMode() }
+                    if (err != null) notice("Could not switch", err, true)
+                    else notice("Done", "You can turn Wi-Fi off now. After the phone restarts, HyperDebloat needs Wi-Fi once to switch this back on.")
+                } else {
+                    io { adb.disableNoWifiMode() }
+                }
+                _noWifi.value = adb.noWifiMode
+            } finally {
+                working.set(false)
+                _screen.value = Screen.Home
+                if (!adb.isConnected) { _screen.value = Screen.Setup; refreshSetup() }
+            }
+        }
     }
 
     /** Reads the phone's details. Returns null if not connected or the user gives up. */

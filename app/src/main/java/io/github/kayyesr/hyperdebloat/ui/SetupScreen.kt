@@ -98,7 +98,7 @@ private fun info(step: SetupStep) = when (step) {
     SetupStep.DEV_OPTIONS -> StepInfo(PhoneIcon, "Turn on Developer options",
         "Open About phone and tap OS version 7 times.")
     SetupStep.WIFI -> StepInfo(WifiIcon, "Connect to Wi-Fi",
-        "Any Wi-Fi works, including another phone's hotspot.")
+        "Any Wi-Fi works, including another phone's hotspot. Needed once after each restart.")
     SetupStep.WIRELESS_DEBUGGING -> StepInfo(Icons.Filled.Build, "Turn on Wireless debugging",
         "In Developer options, switch on Wireless debugging and tap Allow.")
     SetupStep.PAIR -> StepInfo(Icons.Filled.Lock, "Pair HyperDebloat",
