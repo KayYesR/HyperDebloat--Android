@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Coming back from Settings: wireless debugging may have just been switched on or paired.
-        vm.tryConnect()
+        // Coming back from Settings: a setup step may have just been done.
+        vm.refreshSetup()
     }
 }

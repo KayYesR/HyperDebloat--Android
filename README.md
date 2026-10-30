@@ -1,6 +1,6 @@
 # HyperDebloat for Android
 
-> Not tested on a phone yet. Reports from Xiaomi, Redmi and POCO phones are welcome: turn on **Save raw phone output** on the home screen, run a scan, and attach `raw_adb_output.txt` and the report CSV (both under **Reports**) to an issue.
+> Not tested on a phone yet. Reports from Xiaomi, Redmi and POCO phones are welcome: turn on **Save raw output for bug reports** in the ⋮ menu, run a scan, and attach `raw_adb_output.txt` and the report CSV (both under **Reports**) to an issue.
 
 The Android version of [HyperDebloat](https://github.com/KayYesR/HyperDebloat), the device-aware debloater for Xiaomi, Redmi and POCO phones running HyperOS or MIUI. It runs on the phone itself over **wireless debugging**: no root, no PC, no second app.
 
@@ -22,23 +22,24 @@ It reads every package and running process on **your** phone and rates each pack
 
 ## Install
 
-Download `HyperDebloat-<version>.apk` from [Releases](https://github.com/KayYesR/HyperDebloat-Android/releases) and open it on the phone. Allow installing from your browser or file manager when asked.
+Download `HyperDebloat-<version>.apk` from [Releases](https://github.com/KayYesR/HyperDebloat--Android/releases) and open it on the phone. Allow installing from your browser or file manager when asked.
 
 ## How to use
 
-1. **Developer options:** Settings > About phone, tap **OS version** 7 times. Then Settings > Additional settings > Developer options > **USB debugging: ON**.
-2. **Wireless debugging:** connect to Wi-Fi, then in Developer options turn on **Wireless debugging** and allow it on this network.
-3. **Pair (first time only):** in HyperDebloat tap **Start pairing**. In Wireless debugging tap **Pair device with pairing code** and leave that dialog open. Pull down the notification shade and type the 6-digit code into the HyperDebloat notification.
-   - No reply box in the notification? On Xiaomi phones, set the notification style to Android (search Settings for "notification style"), or use split screen and type the code into HyperDebloat itself.
-4. HyperDebloat connects by itself from then on, whenever Wireless debugging is on. Wireless debugging may switch itself off after a restart or a Wi-Fi change; turn it on again before using the app.
-5. Open the apps you rely on (file manager, camera, gallery, payment apps) and come back, so the scan can see what they use.
-6. Choose an action:
-   - **Recommended** shows every green package. Background junk is ticked; anything with an icon is not. Untick anything you want to keep and press **Remove selected**.
-   - **Custom** opens the full colour-coded list, with the same packages ticked as in Recommended. Pick a category or type a name to narrow it, tick what you want and press **Remove selected**. Red and grey packages ask for an extra confirmation. Tap **(i)** on a row for the phone's evidence, the lists' ratings and the final reasoning.
-   - **Restore** asks the phone what has been removed or disabled, by this tool or any other (Xiaomi ADB/Fastboot Tools, UAD, Canta, plain adb), and puts back what you tick.
-   - **Rescan phone** and **Reports**.
+The app walks you through setup one step at a time and moves on by itself:
 
-To see the ratings without changing anything, open Custom and press **< Back**.
+1. Turn on **Developer options** (About phone, tap **OS version** 7 times).
+2. Connect to **Wi-Fi**. Any network works, including another phone's hotspot.
+3. Turn on **Wireless debugging** in Developer options.
+4. **Pair** (first time only): tap **Start pairing**, tap **Pair device with pairing code** in Wireless debugging, then type the 6-digit code into the HyperDebloat notification. No reply box in the notification? Tap **Type the code here** and use split screen.
+
+Then pick one:
+
+- **Recommended**: safe junk, already ticked. Untick anything you want to keep and press **Remove**.
+- **Custom**: everything, colour-coded. Tap rows to tick them. Tap **ⓘ** to see why a package got its rating.
+- **Restore**: brings back anything removed or disabled, by this app or any other tool.
+
+Open the apps you use most before scanning, so the scan can see what they depend on. To see the ratings without changing anything, open Custom and go back.
 
 ## How ratings are decided
 

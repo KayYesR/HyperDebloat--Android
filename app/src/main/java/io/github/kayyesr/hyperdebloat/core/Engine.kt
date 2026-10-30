@@ -179,10 +179,9 @@ class Engine(
         val removed = results.count { it.result.startsWith("Success", true) }
         val frozen = results.filter { it.result.startsWith("Suspended", true) }
         val failed = results.filter { !isOk(it.result) }
-        val failText = if (failed.isNotEmpty()) "\n\nNot removed (${failed.size}): " + failed.joinToString(", ") { it.pkg } +
-            "\n(MIUI/HyperOS protects some apps; nothing changed for those.)" else ""
-        val offText = if (frozen.isNotEmpty()) "\n\nFrozen instead of removed (${frozen.size}): " + frozen.joinToString(", ") { it.pkg } +
-            "\n(The phone would not remove them. They stay on the phone with a greyed-out icon, cannot open, and their notifications are hidden. Restore unfreezes them.)" else ""
+        val failText = if (failed.isNotEmpty()) "\n\nNot removed, protected by HyperOS (${failed.size}):\n• " + failed.joinToString("\n• ") { it.pkg } else ""
+        val offText = if (frozen.isNotEmpty()) "\n\nFrozen instead (${frozen.size}): greyed out, can't open. Restore unfreezes them.\n• " +
+            frozen.joinToString("\n• ") { it.pkg } else ""
         log.line("Removed $removed, froze ${frozen.size}, of ${results.size}. Log saved: $logFile")
         return Summary(removed, frozen.size, results.size, failText, offText, logFile)
     }
@@ -256,12 +255,11 @@ class Engine(
         }
         try { storage.writeText(file, lines.joinToString("\n"), export = true) } catch (_: Exception) { }
         saveRemovedState(state)
-        var msg = "${back.size} app(s) you removed earlier came back."
-        if (done.isNotEmpty()) msg += "\n\nDealt with:\n  " + done.joinToString("\n  ")
-        msg += "\n\nAn app that comes back a second time is frozen: it stays on the phone with a greyed-out icon, cannot open, and its notifications are hidden. Whatever keeps reinstalling it then has nothing to do."
-        if (notDone.isNotEmpty()) msg += "\n\nThe phone refused both removing and freezing:\n  " + notDone.joinToString("\n  ")
-        msg += "\n\nIf you reinstalled one of these yourself, put it back with Restore instead; Restore tells this tool to leave it alone.\n\nDetails: $file"
-        return msg to true
+        var msg = ""
+        if (done.isNotEmpty()) msg += "Dealt with:\n• " + done.joinToString("\n• ")
+        if (notDone.isNotEmpty()) msg += "\n\nCould not remove or freeze:\n• " + notDone.joinToString("\n• ")
+        msg += "\n\nAn app that comes back twice gets frozen. If you reinstalled one yourself, use Restore so it is left alone."
+        return msg.trim() to true
     }
 
     // ------------------------------------------------------------------------------------------

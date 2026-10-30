@@ -112,11 +112,11 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         } catch (e: AdbPairingRequiredException) {
             everPaired = false
             _state.value = State.NOT_PAIRED
-            _lastError.value = "Wireless debugging is on, but this app is not paired yet."
+            _lastError.value = "Not paired yet."
             false
         } catch (e: InterruptedException) {
             _state.value = State.NOT_REACHABLE
-            _lastError.value = "Wireless debugging was not found. Check that Wi-Fi is connected and Wireless debugging is on."
+            _lastError.value = "Wireless debugging is off."
             false
         } catch (e: Exception) {
             _state.value = State.NOT_REACHABLE
@@ -153,12 +153,12 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     /** Pairs with the 6-digit code, then connects. Returns null on success, or the error text. */
     fun pairAndConnect(port: Int, code: String): String? {
         val clean = code.filter { it.isDigit() }
-        if (clean.length != 6) return "The pairing code has 6 digits."
+        if (clean.length != 6) return "The code has 6 digits."
         val err = AtomicReference<String?>(null)
         try {
             pair(AndroidUtils.getHostIpAddress(context), port, clean)
         } catch (e: Exception) {
-            err.set("Pairing failed: ${e.message ?: e.javaClass.simpleName}. Check the code; the phone shows a new code each time.")
+            err.set("Wrong or expired code. Open Pair device with pairing code again for a new one.")
         }
         if (err.get() != null) { _lastError.value = err.get()!!; return err.get() }
         everPaired = true
@@ -167,7 +167,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             if (tryConnect()) return null
             Thread.sleep(1500)
         }
-        return "Paired, but could not connect yet. Make sure Wireless debugging is still on, then press Connect."
+        return "Paired, but not connected yet. Check Wireless debugging is still on."
     }
 
     /** Runs a shell command and streams its output lines. Reconnects once if the connection dropped. */

@@ -2,6 +2,9 @@ package io.github.kayyesr.hyperdebloat.ui
 
 import android.app.Application
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.kayyesr.hyperdebloat.BuildConfig
@@ -32,30 +35,37 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface Screen {
-    data object Connect : Screen
+    data object Setup : Screen
     data object Home : Screen
     data class Busy(val title: String) : Screen
     data class Pick(val spec: PickSpec) : Screen
     data object Reports : Screen
 }
 
-/** A package list to tick from (Show-SelectionGrid). Completes with the ticked rows, or an empty list for Back. */
+/** A package list to tick from. Completes with the ticked rows, or an empty list for Back. */
 class PickSpec(
     val title: String,
     val items: List<Row>,
     val actionText: String,
     val preselectBackground: Boolean,
-    val legend: String,
     val noMatchHint: String,
     val allowFlagged: Boolean,
 ) {
     internal val result = CompletableDeferred<List<Row>>()
 }
 
-/** A message the user must answer (Read-YesNo) or acknowledge (Show-Notice). */
-class DialogSpec(val text: String, val yesNo: Boolean, val defaultYes: Boolean, val warning: Boolean) {
+/** A question (Yes/No) or a notice (OK). */
+class DialogSpec(
+    val title: String?,
+    val text: String,
+    val yesNo: Boolean,
+    val warning: Boolean,
+    val yesText: String? = null,
+    val noText: String? = null,
+) {
     internal val result = CompletableDeferred<Boolean>()
 }
 
@@ -72,8 +82,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val fetcher = HttpFetcher()
 
-    private val _screen = MutableStateFlow<Screen>(Screen.Connect)
+    private val _screen = MutableStateFlow<Screen>(Screen.Setup)
     val screen: StateFlow<Screen> = _screen
+
+    private val _setupStep = MutableStateFlow(SetupStep.DEV_OPTIONS)
+    val setupStep: StateFlow<SetupStep> = _setupStep
+
+    private val _checking = MutableStateFlow(false)
+    val checking: StateFlow<Boolean> = _checking
 
     private val _dialog = MutableStateFlow<DialogSpec?>(null)
     val dialog: StateFlow<DialogSpec?> = _dialog
@@ -84,19 +100,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _device = MutableStateFlow<DeviceInfo?>(null)
     val device: StateFlow<DeviceInfo?> = _device
 
-    private val _summary = MutableStateFlow("")
-    val summary: StateFlow<String> = _summary
+    private val _counts = MutableStateFlow<Map<Tier, Int>?>(null)
+    val counts: StateFlow<Map<Tier, Int>?> = _counts
+
+    private val _lastScan = MutableStateFlow("")
+    val lastScan: StateFlow<String> = _lastScan
 
     private val _saveRaw = MutableStateFlow(prefs.getBoolean("saveRaw", false))
     val saveRaw: StateFlow<Boolean> = _saveRaw
 
-    private val _working = MutableStateFlow(false)
-    val working: StateFlow<Boolean> = _working
+    private val working = AtomicBoolean(false)
+    private val connecting = AtomicBoolean(false)
 
     private val shell = AdbShell(adb, storage) { _saveRaw.value }
-    private val logger = Log { line ->
-        _log.update { (it + line).takeLast(3000) }
-    }
+    private val logger = Log { line -> _log.update { (it + line).takeLast(3000) } }
 
     private var engine: Engine? = null
     private var rows: List<Row>? = null
@@ -104,20 +121,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var deviceKey = ""
 
     init {
-        tryConnect()
+        refreshSetup()
     }
 
     // ------------------------------------------------------------------------------------------
     // Asking the user
     // ------------------------------------------------------------------------------------------
-    private suspend fun ask(text: String, defaultYes: Boolean = false, warning: Boolean = false): Boolean {
-        val d = DialogSpec(text, true, defaultYes, warning)
+    private suspend fun ask(title: String?, text: String, yes: String? = null, no: String? = null, warning: Boolean = false): Boolean {
+        val d = DialogSpec(title, text, true, warning, yes, no)
         _dialog.value = d
         return d.result.await().also { _dialog.value = null }
     }
 
-    private suspend fun notice(text: String, warning: Boolean = false) {
-        val d = DialogSpec(text, false, true, warning)
+    private suspend fun notice(title: String?, text: String, warning: Boolean = false) {
+        val d = DialogSpec(title, text, false, warning)
         _dialog.value = d
         d.result.await()
         _dialog.value = null
@@ -139,32 +156,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSaveRaw(on: Boolean) { _saveRaw.value = on; prefs.edit().putBoolean("saveRaw", on).apply() }
 
-    fun showReports() { if (!_working.value) _screen.value = Screen.Reports }
-    fun goHome() { if (!_working.value) _screen.value = if (adb.state.value == AdbManager.State.CONNECTED) Screen.Home else Screen.Connect }
+    fun showReports() { if (!working.get()) _screen.value = Screen.Reports }
+    fun goHome() { if (!working.get()) _screen.value = if (adb.state.value == AdbManager.State.CONNECTED) Screen.Home else Screen.Setup }
 
     // ------------------------------------------------------------------------------------------
-    // Connection
+    // Setup and connection
     // ------------------------------------------------------------------------------------------
-    fun tryConnect() {
-        if (_working.value) return
+    private fun devOptionsOn(): Boolean =
+        Settings.Global.getInt(getApplication<Application>().contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+
+    @Suppress("DEPRECATION")
+    private fun wifiConnected(): Boolean {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java) ?: return false
+        return cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+    }
+
+    /** Works out which setup step is next, and connects when everything is in place. */
+    fun refreshSetup() {
+        if (working.get()) return
+        when {
+            !devOptionsOn() -> { _setupStep.value = SetupStep.DEV_OPTIONS; return }
+            !wifiConnected() -> { _setupStep.value = SetupStep.WIFI; return }
+        }
+        if (!connecting.compareAndSet(false, true)) return
         viewModelScope.launch {
-            val ok = io { adb.tryConnect() }
-            if (ok && _screen.value == Screen.Connect) onConnected()
+            _checking.value = true
+            try {
+                val ok = io { adb.tryConnect() }
+                if (ok) {
+                    if (_screen.value == Screen.Setup) onConnected()
+                } else {
+                    _setupStep.value = if (adb.state.value == AdbManager.State.NOT_PAIRED) SetupStep.PAIR else SetupStep.WIRELESS_DEBUGGING
+                    if (_screen.value == Screen.Home) _screen.value = Screen.Setup
+                }
+            } finally {
+                _checking.value = false
+                connecting.set(false)
+            }
         }
     }
 
     fun startPairing() = PairingService.start(getApplication())
 
-    /** Pairing with the code typed in the app (works in split screen next to Settings). */
+    /** Pairing with the code typed in the app (split screen next to Settings). */
     fun pairInApp(code: String) {
         viewModelScope.launch {
             val port = PairingService.port.value.takeIf { it > 0 } ?: io { adb.findPairingPort(10_000) }
             if (port <= 0) {
-                notice("The pairing service was not found. Open Wireless debugging > Pair device with pairing code, keep it open, then try again.", true)
+                notice("Pairing screen not found", "Keep Pair device with pairing code open in Settings, then try again.", true)
                 return@launch
             }
             val err = io { adb.pairAndConnect(port, code) }
-            if (err != null) notice(err, true) else { PairingService.stop(getApplication()); onConnected() }
+            if (err != null) notice("Pairing failed", err, true) else { PairingService.stop(getApplication()); onConnected() }
         }
     }
 
@@ -172,10 +215,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (connectPhone() != null) _screen.value = Screen.Home
     }
 
-    /** Reads the phone's details (Connect-Phone). Returns null if the user gives up. */
+    /** Reads the phone's details. Returns null if not connected or the user gives up. */
     private suspend fun connectPhone(): DeviceInfo? {
         if (adb.state.value != AdbManager.State.CONNECTED && !io { adb.tryConnect() }) {
-            _screen.value = Screen.Connect
+            _screen.value = Screen.Setup
+            refreshSetup()
             return null
         }
         val dev = io { Scanner(shell, logger).deviceInfo() }
@@ -183,7 +227,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             step("Phone")
             logger.line("${dev.marketName} (${dev.model}, ${dev.codename})  |  ${dev.osName} ${dev.osBuild}  |  Android ${dev.android}")
             if (!Regex("xiaomi|redmi|poco", RegexOption.IGNORE_CASE).containsMatchIn("${dev.manufacturer} ${dev.brand}")) {
-                if (!ask("This does not look like a Xiaomi, Redmi or POCO phone. The lists are built for those. Continue anyway?", false, true)) return null
+                if (!ask("Not a Xiaomi phone", "The lists are made for Xiaomi, Redmi and POCO phones. Continue anyway?", warning = true)) return null
             }
             deviceKey = dev.key
             needScan = true
@@ -200,8 +244,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     enum class Action { RECOMMENDED, CUSTOM, RESTORE, RESCAN }
 
     fun run(action: Action) {
-        if (_working.value) return
-        _working.value = true
+        if (!working.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
                 val dev = connectPhone() ?: return@launch
@@ -209,9 +252,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     try {
                         rows = scan(dev)
                     } catch (e: Exception) {
-                        val report = errorReport(e, "Scan")
-                        logger.line("  Error in scan: ${e.message}")
-                        notice("The scan stopped with an error.\n\n$report", true)
+                        notice("Scan stopped", errorReport(e, "Scan"), true)
                         return@launch
                     }
                 }
@@ -226,19 +267,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // One failed action must not close the app: report it and go back to the home screen.
                     needScan = true
                     val name = action.name.lowercase().replaceFirstChar { it.uppercase() }
-                    val report = errorReport(e, name)
-                    logger.line("  Error in $name: ${e.message}")
-                    notice("$name stopped with an error. Nothing after this point was done.\n\n$report", true)
+                    notice("$name stopped", "Nothing after this point was done.\n\n" + errorReport(e, name), true)
                 }
             } finally {
-                _working.value = false
-                if (_screen.value !is Screen.Connect) _screen.value = Screen.Home
+                working.set(false)
+                if (_screen.value != Screen.Setup) _screen.value = Screen.Home
             }
         }
     }
 
     private suspend fun scan(dev: DeviceInfo): List<Row> {
-        busy("Scanning the phone (read-only)")
+        busy("Scanning your phone")
         val eng = engine!!
         step("Scanning the phone (read-only)")
         val sc = Scanner(shell, logger)
@@ -250,10 +289,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             logger.line("! Came-back check skipped: ${e.message}")
             null to false
         }
-        if (msg != null) notice(msg, true)
+        if (msg != null) notice("Removed apps came back", msg, true)
         if (changed) sets = io { sc.packageSets() }
         val facts = io { sc.deviceFacts(sets.all) }
-        step("Community lists (descriptions and cross-check)")
+        step("Downloading the debloat lists")
         val idx = io { CommunityLists.buildIndex(CommunityLists.load(storage, fetcher, logger)) }
         val result = Classifier.classify(idx, sets, facts, getApplication<Application>().packageName)
         step("Classification")
@@ -261,84 +300,82 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             logger.line("  ${t.colour.padEnd(7)} ${t.label.padEnd(9)} ${result.count { it.tier == t }} packages")
         }
         io { eng.saveReport(result, dev) }
-        _summary.value = "Last scan ${SimpleDateFormat("HH:mm", Locale.US).format(Date())}: " + Classifier.summary(result)
+        _counts.value = Tier.entries.associateWith { t -> result.count { it.tier == t } }
+        _lastScan.value = SimpleDateFormat("HH:mm", Locale.US).format(Date())
         needScan = false
         return result
     }
 
-    /** Names any ticked app that has an icon on the home screen, so nothing the user sees daily goes by accident. */
+    /** Names ticked everyday apps and ordinary apps, so nothing used daily goes by accident. */
     private fun iconAppNote(items: List<Row>): String {
-        val apps = items.filter { it.userApp && !it.ordinary }.map { it.pkg }
-        val ord = items.filter { it.ordinary }.map { it.pkg }
-        val ordText = if (ord.isNotEmpty()) "\n\n${ord.size} ordinary app(s) will be removed completely; Restore can only open their Play Store page:\n  " + ord.joinToString("\n  ") else ""
-        if (apps.isEmpty()) return ordText
-        return "\n\nThese ${apps.size} are everyday apps (home-screen icon or on the keep list) that you may use:\n  " + apps.joinToString("\n  ") +
-            "\n\nPress No and untick them if you want to keep them." + ordText
+        val apps = items.filter { it.userApp && !it.ordinary }.map { appName(it.pkg) }
+        val ord = items.filter { it.ordinary }.map { appName(it.pkg) }
+        var s = ""
+        if (apps.isNotEmpty()) s += "\n\nApps you may use:\n• " + apps.joinToString("\n• ") + "\nPress Cancel if you want to keep any of them."
+        if (ord.isNotEmpty()) s += "\n\nFully uninstalled (Restore can only open the Play Store):\n• " + ord.joinToString("\n• ")
+        return s
     }
+
+    private fun appName(pkg: String) = appInfo.label(pkg).ifEmpty { pkg }
 
     private suspend fun recommended(rows: List<Row>) {
         val green = rows.filter { it.tier == Tier.SAFE || (it.tier == Tier.APP && it.atSetup) }
         if (green.isEmpty()) {
-            logger.line("Nothing rated GREEN on this phone.")
-            notice("Nothing on this phone is rated GREEN (safe to remove without side effects).\n\nUse Custom to review the YELLOW packages: each one says what stops working if you remove it.")
+            notice("Nothing safe to remove", "Nothing on this phone is rated safe. Use Custom to look at the rest.")
             return
         }
-        step("Recommended: ${green.size} packages (GREEN, plus apps installed during setup)")
-        val flagged = rows.count { it.tier == Tier.FLAGGED }
-        if (flagged > 0) logger.line("$flagged packages were flagged (phone and lists disagree, or no data) and will not be touched. See the report.")
-        val legend = "GREEN: removing them breaks nothing else. Background junk is ticked; everyday apps (YouTube, Chrome, Gmail, WhatsApp and anything with an icon) are NOT. BLUE: apps installed during phone setup (games and other preloads) - not ticked, as backup-restored apps arrive then too. Tick what you don't want."
-        val picked = pick(PickSpec("Recommended (${green.size} packages)", green, "Remove selected", true, legend,
-            "Recommended shows GREEN and setup-installed apps only. Go Back > Custom to search everything.", false))
+        step("Recommended: ${green.size} packages")
+        val picked = pick(PickSpec("Recommended", green, "Remove selected", true,
+            "Recommended only shows safe apps. Use Custom to search everything.", false))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
-        if (!ask("Remove ${picked.size} GREEN package(s)?${iconAppNote(picked)}")) { logger.line("Cancelled. Nothing was removed."); return }
+        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)
     }
 
     private suspend fun custom(rows: List<Row>) {
-        step("Custom: opening the list")
-        val legend = "GREEN = safe  |  YELLOW = a minor feature may break  |  ORANGE = a notable/core feature may break  |  RED = can stop the phone booting  |  GREY = flagged: unknown to every list, tick only if you know what it is  |  BLUE = ordinary app (never pre-ticked)"
-        var picked = pick(PickSpec("Custom", rows, "Remove selected", true, legend, "", true))
+        step("Custom")
+        var picked = pick(PickSpec("Custom", rows, "Remove selected", true, "", true))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
 
         val red = picked.filter { it.tier == Tier.UNSAFE }
         if (red.isNotEmpty()) {
-            val names = red.joinToString("\n") { it.pkg }
-            if (!ask("You selected ${red.size} RED (unsafe) package(s):\n\n$names\n\nThese can stop the phone booting. The only fix may be a factory reset.\n\nRemove them anyway?", false, true)) {
-                picked = picked.filter { it.tier != Tier.UNSAFE }; logger.line("RED packages skipped.")
+            val names = red.joinToString("\n• ") { appName(it.pkg) }
+            if (!ask("${red.size} unsafe selected", "• $names\n\nThese can stop the phone starting. The fix may be a factory reset.",
+                    yes = "Remove anyway", no = "Skip them", warning = true)) {
+                picked = picked.filter { it.tier != Tier.UNSAFE }
             }
         }
         val grey = picked.filter { it.tier == Tier.FLAGGED }
         if (grey.isNotEmpty()) {
-            val names = grey.joinToString("\n") { it.pkg }
-            val warn = "No list knows what these do, so the tool cannot say what breaks without them. If something stops working, use Restore."
-            if (!ask("You selected ${grey.size} FLAGGED (unknown) package(s):\n\n$names\n\n$warn\n\nRemove them anyway?", false, true)) {
-                picked = picked.filter { it.tier != Tier.FLAGGED }; logger.line("FLAGGED packages skipped.")
+            val names = grey.joinToString("\n• ") { appName(it.pkg) }
+            if (!ask("${grey.size} unknown selected", "• $names\n\nNo list knows what these do. If something breaks, use Restore.",
+                    yes = "Remove anyway", no = "Skip them", warning = true)) {
+                picked = picked.filter { it.tier != Tier.FLAGGED }
             }
         }
-        if (picked.isEmpty()) { logger.line("Nothing left to remove."); return }
-        val byTier = picked.groupBy { it.risk }.map { "${it.value.size} ${it.key}" }
-        if (!ask("Remove ${picked.size} packages (${byTier.joinToString(", ")})?${iconAppNote(picked)}")) { logger.line("Cancelled. Nothing was removed."); return }
+        if (picked.isEmpty()) return
+        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)
     }
 
     private suspend fun removePackages(items: List<Row>) {
         val eng = engine!!
-        busy("Removing ${items.size} package(s)")
+        busy("Removing ${items.size} apps")
         step("Removing ${items.size} package(s)")
         val results = io {
             eng.removeFirstPass(items) { i, n, it, res -> logger.line("  [$i/$n] ${it.pkg}  ${eng.shownResult(res)}") }
         }
 
-        // Fallback for apps the ROM refuses to remove over ADB: the phone's own uninstall screen.
+        // Fallback for apps HyperOS refuses to remove this way: the phone's own uninstall screen.
         val failed = eng.notRemoved(results)
         if (failed.isNotEmpty()) {
-            val names = failed.joinToString("\n  ") { it.pkg }
-            val q = "${failed.size} app(s) could not be removed this way:\n  $names\n\nThe phone may still let you uninstall them from its own uninstall screen (the one Settings uses). For each app, the phone will ask; tap OK (or Uninstall) there.\n\nNote: this removes the app completely, or only its update if it is a system app. Restore may not be able to bring it back; you would reinstall it from a store.\n\nTry it?"
-            if (ask(q)) {
+            val names = failed.joinToString("\n• ") { appName(it.pkg) }
+            if (ask("${failed.size} apps are protected", "• $names\n\nTry the phone's own uninstall screen? You tap OK for each one. " +
+                    "This uninstalls fully, so Restore may not bring them back.", yes = "Try", no = "Skip")) {
                 for (r in failed) {
                     if (!io { eng.openPhoneUninstall(r) }) continue
-                    logger.line("  ${r.pkg}: uninstall screen opened - tap OK there")
-                    notice("The phone is asking whether to uninstall:\n\n${r.pkg}\n\nTap OK (or Uninstall) on the phone's screen, wait a moment, then press OK here.")
+                    logger.line("  ${r.pkg}: uninstall screen opened")
+                    notice("Tap OK on the phone", "Confirm uninstalling ${appName(r.pkg)}, then press OK here.")
                     io { eng.afterPhoneUninstall(r) }
                 }
             }
@@ -348,16 +385,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = io { eng.finishRemoval(results) }
         if (s.removed + s.frozen > 0) {
             needScan = true
-            logger.line("Restore any of them later with Restore.")
-            if (ask("Removed ${s.removed} of ${s.total} package(s).${s.frozenText}${s.failText}\n\nReboot the phone now? Afterwards, check calls, camera, GPS/compass, payments and fingerprint. Anything removed can be put back with Restore.")) {
-                reboot()
-            }
-        } else notice("Nothing was removed.${s.failText}", true)
+            if (ask("Removed ${s.removed} of ${s.total}", "${s.frozenText}${s.failText}\n\nRestart the phone now? Then check calls, camera, GPS, payments and fingerprint.".trimStart(),
+                    yes = "Restart", no = "Later")) reboot()
+        } else notice("Nothing was removed", s.failText.trim(), true)
     }
 
     private suspend fun restore(dev: DeviceInfo) {
         val eng = engine!!
-        busy("Asking the phone what has been removed or disabled")
+        busy("Checking what was removed")
         step("Asking the phone what has been removed or disabled")
         val state = io { eng.removedOnPhone() }
         val items = io {
@@ -367,21 +402,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (items.isEmpty()) {
-            logger.line("Nothing has been removed or disabled on this phone.")
-            notice("Nothing has been removed or disabled on this phone, so there is nothing to restore.")
+            notice("Nothing to restore", "Nothing has been removed or disabled on this phone.")
             return
         }
-        val nR = items.count { it.action == RestoreAction.INSTALL }
-        val nS = items.count { it.action == RestoreAction.STORE }
-        val nE = items.count { it.action == RestoreAction.ENABLE }
-        val nF = items.count { it.action == RestoreAction.UNSUSPEND }
-        step("Restore: $nR removed system apps, $nE disabled apps, $nF frozen apps, $nS ordinary apps (Play Store)")
-        val picked = pick(PickSpec("Restore", items, "Restore selected", false,
-            "GREEN = RESTORE (removed system app, comes straight back), RE-ENABLE (disabled app) or UNFREEZE (frozen app)  |  YELLOW = PLAY STORE (ordinary app, its Play Store page opens on the phone)",
-            "", false))
-        if (picked.isEmpty()) { logger.line("Nothing selected."); return }
-        if (!ask("Restore ${picked.size} packages?", true)) return
-        busy("Restoring ${picked.size} package(s)")
+        val picked = pick(PickSpec("Restore", items, "Restore selected", false, "", false))
+        if (picked.isEmpty()) return
+        busy("Restoring ${picked.size} apps")
         val lost = ArrayList<String>()
         val restored = ArrayList<String>()
         for (it in picked) {
@@ -392,28 +418,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         needScan = true
         io { eng.forgetRestored(restored) }
-        if (lost.isNotEmpty()) {
-            logger.line("! ${lost.size} app(s) must be reinstalled from the Play Store (your data was kept).")
-            for (p in lost) {
-                if (ask("Open the Play Store page for $p on the phone?", true)) {
-                    io { eng.openPlayStore(p) }
-                    notice("The Play Store page for $p is open on the phone.\n\nTap Install there, then press OK here.")
-                }
+        for (p in lost) {
+            if (ask("Reinstall from Play Store?", "${appName(p)} was fully uninstalled. Open its Play Store page? Your data was kept.", yes = "Open", no = "Skip")) {
+                io { eng.openPlayStore(p) }
+                notice("Tap Install", "Tap Install on the Play Store page, then press OK here.")
             }
         }
         val failedN = picked.count { it.action != RestoreAction.STORE } - restored.size
-        val summary = "Restored ${restored.size} app(s)." +
-            (if (lost.isNotEmpty()) "\n${lost.size} need the Play Store." else "") +
-            (if (failedN > 0) "\n$failedN could not be restored (see the progress log)." else "")
+        val extra = if (failedN > 0) "\n$failedN could not be restored (see Reports)." else ""
         if (restored.isNotEmpty()) {
-            logger.line("Some launchers only show restored apps after a reboot.")
-            if (ask("$summary\n\nSome launchers only show restored apps after a reboot. Reboot the phone now?", true)) reboot()
-        } else notice(summary)
+            if (ask("Restored ${restored.size} apps", "Some launchers only show them after a restart. Restart now?$extra", yes = "Restart", no = "Later")) reboot()
+        } else notice("Restore finished", "Nothing came back.$extra".trim())
     }
 
     private suspend fun reboot() {
         io { adb.reboot() }
-        _screen.value = Screen.Connect
+        _screen.value = Screen.Setup
+        _setupStep.value = SetupStep.WIRELESS_DEBUGGING
     }
 
     /** Saves the full error to error_log.txt and returns a short description for the user. */
@@ -423,6 +444,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try {
             storage.appendText("error_log.txt", "==== ${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())}  HyperDebloat $version  ($context)\n${e.message}\n$sw\n")
         } catch (_: Exception) { }
-        return "${e.message ?: e.javaClass.simpleName}\n\nDetails saved to error_log.txt (see Reports)."
+        logger.line("  Error in $context: ${e.message}")
+        return "${e.message ?: e.javaClass.simpleName}\n\nFull details: Reports › error_log.txt"
     }
 }

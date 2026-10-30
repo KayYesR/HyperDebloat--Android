@@ -16,8 +16,8 @@ android {
         // Wireless debugging pairing exists from Android 11 on.
         minSdk = 30
         targetSdk = 35
-        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 2
+        versionName = (project.findProperty("versionName") as String?) ?: "0.2.0"
         // Phones only; leaving out the x86 copies of the TLS library keeps the APK smaller.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
@@ -51,6 +51,20 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            // Screenshot tests write PNGs to app/build/outputs/roborazzi when run.
+            all {
+                it.systemProperty("roborazzi.test.record", "true")
+                // Optional: a folder holding Robolectric's android-all jar, for builds without Maven Central access.
+                System.getenv("ROBOLECTRIC_JARS")?.let { dir ->
+                    it.systemProperty("robolectric.offline", "true")
+                    it.systemProperty("robolectric.dependency.dir", dir)
+                }
+            }
+        }
     }
     packaging {
         resources {
@@ -92,4 +106,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    // Screenshot tests of the screens, rendered on the JVM (no phone needed).
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.39.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.39.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

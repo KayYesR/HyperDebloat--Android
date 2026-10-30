@@ -100,7 +100,7 @@ class HttpFetcher : Fetcher {
 }
 
 /** App names and icons from the package manager, for display only (ratings never use them). */
-class AppInfoCache(context: Context) {
+class AppInfoCache(context: Context) : io.github.kayyesr.hyperdebloat.ui.AppLookup {
     private val pm = context.packageManager
     private val labels = ConcurrentHashMap<String, String>()
     private val icons = ConcurrentHashMap<String, Any>() // Bitmap, or NONE
@@ -114,11 +114,11 @@ class AppInfoCache(context: Context) {
         null
     }
 
-    fun label(pkg: String): String = labels.getOrPut(pkg) {
+    override fun label(pkg: String): String = labels.getOrPut(pkg) {
         info(pkg)?.loadLabel(pm)?.toString()?.takeIf { it.isNotBlank() && it != pkg } ?: ""
     }
 
-    fun icon(pkg: String): Bitmap? {
+    override fun icon(pkg: String): Bitmap? {
         val v = icons.getOrPut(pkg) {
             try { info(pkg)?.loadIcon(pm)?.toBitmap(sizePx, sizePx) ?: none } catch (_: Exception) { none }
         }

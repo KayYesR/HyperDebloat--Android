@@ -71,8 +71,8 @@ class PairingService : Service() {
                 worker.execute { pair(code) }
             }
             else -> {
-                showForeground(notification("Looking for the pairing service",
-                    "Open Settings > Additional settings > Developer options > Wireless debugging > Pair device with pairing code.", withReply = false))
+                showForeground(notification("Waiting for the pairing code",
+                    "In Wireless debugging, tap Pair device with pairing code.", withReply = false))
                 startSearch()
             }
         }
@@ -82,7 +82,7 @@ class PairingService : Service() {
     private fun startSearch() {
         if (searching) return
         searching = true
-        _status.value = "Looking for the pairing service. Open Wireless debugging > Pair device with pairing code."
+        _status.value = "Waiting. Tap Pair device with pairing code in Wireless debugging."
         worker.execute {
             // Keep looking for up to 10 minutes while the user finds the setting.
             val deadline = System.currentTimeMillis() + 10 * 60_000L
@@ -93,10 +93,10 @@ class PairingService : Service() {
             searching = false
             if (port > 0) {
                 _port.value = port
-                _status.value = "Pairing service found. Type the 6-digit code into the HyperDebloat notification."
-                update(notification("Pairing service found", "Tap Enter code and type the 6-digit code shown in the pairing dialog.", withReply = true))
+                _status.value = "Now type the 6-digit code into the HyperDebloat notification."
+                update(notification("Enter the pairing code", "Tap Enter code and type the 6 digits shown in Settings.", withReply = true))
             } else {
-                _status.value = "The pairing service was not found. Start pairing again."
+                _status.value = "Timed out. Tap Start pairing again."
                 finish()
             }
         }
@@ -108,16 +108,16 @@ class PairingService : Service() {
         val err = AdbManager.get(this).pairAndConnect(port, code)
         if (err == null) {
             _status.value = "Paired and connected."
-            update(notification("Paired", "Return to HyperDebloat.", withReply = false, openApp = true))
+            update(notification("Paired", "Go back to HyperDebloat.", withReply = false, openApp = true))
             Thread.sleep(4000)
             finish()
         } else {
             // A wrong code closes the pairing dialog and the next one uses a new port, so look for it again.
             _port.value = -1
-            update(notification("Pairing failed", "$err Open Pair device with pairing code again.", withReply = false))
+            update(notification("Wrong code?", "Open Pair device with pairing code again for a new code.", withReply = false))
             Thread.sleep(2500)
             startSearch()
-            _status.value = "$err Open Pair device with pairing code again."
+            _status.value = "That didn't work. Open Pair device with pairing code again."
         }
     }
 
@@ -147,7 +147,7 @@ class PairingService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         b.setContentIntent(open)
         if (withReply) {
-            val input = RemoteInput.Builder(KEY_CODE).setLabel("6-digit pairing code").build()
+            val input = RemoteInput.Builder(KEY_CODE).setLabel("6-digit code").build()
             val pi = PendingIntent.getForegroundService(
                 this, 1, Intent(this, PairingService::class.java).setAction(ACTION_PAIR),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
