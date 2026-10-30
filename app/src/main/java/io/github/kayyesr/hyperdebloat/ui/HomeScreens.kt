@@ -1,6 +1,18 @@
 package io.github.kayyesr.hyperdebloat.ui
 
 import android.content.Intent
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -71,18 +83,20 @@ import java.io.File
 fun HomeScreen(vm: MainViewModel) {
     val dev by vm.device.collectAsState()
     val counts by vm.counts.collectAsState()
-    val lastScan by vm.lastScan.collectAsState()
+    val guide by vm.guide.collectAsState()
     val saveRaw by vm.saveRaw.collectAsState()
     val noWifi by vm.noWifi.collectAsState()
     HomeContent(
-        device = dev, counts = counts, lastScan = lastScan, saveRaw = saveRaw, version = vm.version,
-        noWifi = noWifi, onNoWifi = vm::setNoWifi,
-        onRecommended = { vm.run(Action.RECOMMENDED) },
-        onCustom = { vm.run(Action.CUSTOM) },
+        device = dev, counts = counts, guide = guide, saveRaw = saveRaw, noWifi = noWifi, version = vm.version,
+        onScan = { vm.run(Action.RESCAN) },
+        onReview = { vm.run(Action.RECOMMENDED) },
+        onRestart = vm::restartNow,
+        onSkipRestart = vm::skipRestart,
         onRestore = { vm.run(Action.RESTORE) },
-        onRescan = { vm.run(Action.RESCAN) },
+        onCustom = { vm.run(Action.CUSTOM) },
         onReports = vm::showReports,
         onSaveRaw = vm::setSaveRaw,
+        onNoWifi = vm::setNoWifi,
     )
 }
 
@@ -90,24 +104,32 @@ fun HomeScreen(vm: MainViewModel) {
 fun HomeContent(
     device: DeviceInfo?,
     counts: Map<Tier, Int>?,
-    lastScan: String,
+    guide: Guide,
     saveRaw: Boolean,
+    noWifi: Boolean,
     version: String,
-    onRecommended: () -> Unit,
-    onCustom: () -> Unit,
+    onScan: () -> Unit,
+    onReview: () -> Unit,
+    onRestart: () -> Unit,
+    onSkipRestart: () -> Unit,
     onRestore: () -> Unit,
-    onRescan: () -> Unit,
+    onCustom: () -> Unit,
     onReports: () -> Unit,
     onSaveRaw: (Boolean) -> Unit,
-    noWifi: Boolean = false,
-    onNoWifi: (Boolean) -> Unit = {},
+    onNoWifi: (Boolean) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    val active = when (guide) { Guide.SCAN -> 0; Guide.REVIEW -> 1; Guide.RESTART -> 2; Guide.DONE -> 3 }
+    fun state(i: Int) = when { i < active -> StepState.DONE; i == active -> StepState.CURRENT; else -> StepState.LATER }
+    val safe = counts?.get(Tier.SAFE) ?: 0
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("HyperDebloat", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                IconButton(onClick = onRescan) { Icon(Icons.Filled.Refresh, contentDescription = "Rescan") }
+                Column(Modifier.weight(1f)) {
+                    Text("HyperDebloat", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text((device?.marketName ?: "Your phone") + if (noWifi) " · works without Wi-Fi" else "",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -126,25 +148,42 @@ fun HomeContent(
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            PhoneCard(device, counts, lastScan)
-            if (noWifi) {
-                Spacer(Modifier.height(8.dp))
-                Text("Works without Wi-Fi. After a restart, it needs Wi-Fi once.", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(20.dp))
+
+            if (guide == Guide.DONE) {
+                DoneCard(onScan)
+            } else {
+                Text("Clean your phone in 3 steps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text("Follow the highlighted step.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(16.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StepCard(1, "Check your phone", state(0),
+                        "Looks at every app on your phone and works out which ones are safe to remove. Nothing is changed yet.",
+                        doneText = "$safe apps can be removed safely", button = "Check now", onClick = onScan)
+                    StepCard(2, "Remove junk", state(1),
+                        "Shows the apps that are safe to remove. Junk is already ticked for you; untick anything you want to keep.",
+                        doneText = "Done", button = "Review and remove", onClick = onReview,
+                        extra = {
+                            if (counts != null) {
+                                Spacer(Modifier.height(6.dp))
+                                Text("$safe apps are safe to remove.", style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            }
+                        })
+                    StepCard(3, "Restart your phone", state(2),
+                        "Restarting makes the changes take effect. Open HyperDebloat again afterwards.",
+                        button = "Restart now", onClick = onRestart, secondary = "I'll restart later", onSecondary = onSkipRestart)
+                }
             }
-            Spacer(Modifier.height(20.dp))
 
-            ActionCard(Icons.Filled.CheckCircle, "Recommended", "Remove safe junk. You check the list first.", primary = true, onClick = onRecommended)
-            Spacer(Modifier.height(12.dp))
-            ActionCard(Icons.Filled.Search, "Custom", "See everything, colour-coded, and pick.", onClick = onCustom)
-            Spacer(Modifier.height(12.dp))
-            ActionCard(Icons.Filled.Refresh, "Restore", "Bring back anything removed.", onClick = onRestore)
-
-            Spacer(Modifier.height(20.dp))
-            Text("Tip: open the apps you use most before scanning.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(28.dp))
+            Text("Other options", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OptionRow("Bring apps back", "Undo. Puts back apps removed by this app or any other tool.", onRestore)
+                OptionRow("Choose apps yourself", "For experienced users. Shows every app with its risk level.", onCustom)
+            }
+            Spacer(Modifier.height(24.dp))
             Text("Made by kayyesr, perfected by Claude.", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -152,64 +191,17 @@ fun HomeContent(
 }
 
 @Composable
-private fun PhoneCard(device: DeviceInfo?, counts: Map<Tier, Int>?, lastScan: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(PhoneIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(device?.marketName ?: "Phone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    if (device != null) {
-                        Text("${device.osBuild} · Android ${device.android}", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            if (counts == null) {
-                Text("Not scanned yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else {
-                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                    for (t in listOf(Tier.SAFE, Tier.MODERATE, Tier.HIGH, Tier.UNSAFE, Tier.FLAGGED, Tier.APP)) {
-                        val s = tierStyle(t)
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${counts[t] ?: 0}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = s.colour)
-                            Text(s.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                        }
-                    }
-                }
-                if (lastScan.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Scanned at $lastScan", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ActionCard(icon: ImageVector, title: String, text: String, primary: Boolean = false, onClick: () -> Unit) {
-    val bg = if (primary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerLow
-    val fg = if (primary) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-    val sub = if (primary) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
-    Card(
-        onClick = onClick,
-        colors = CardDefaults.cardColors(containerColor = bg),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(Modifier.padding(horizontal = 18.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(44.dp).clip(CircleShape).background(if (primary) Color.White.copy(alpha = 0.18f) else MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, contentDescription = null, tint = if (primary) fg else MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-            Spacer(Modifier.width(16.dp))
-            Column {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = fg)
-                Text(text, style = MaterialTheme.typography.bodyMedium, color = sub)
-            }
+private fun DoneCard(onScan: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.height(8.dp))
+            Text("All done", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Spacer(Modifier.height(4.dp))
+            Text("Check that calls, camera, payments and fingerprint still work. If something broke, tap Bring apps back below.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = onScan) { Text("Check my phone again") }
         }
     }
 }

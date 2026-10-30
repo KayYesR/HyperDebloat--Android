@@ -7,7 +7,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,14 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -44,11 +41,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.github.kayyesr.hyperdebloat.adb.PairingService
@@ -56,7 +51,7 @@ import kotlinx.coroutines.delay
 
 enum class SetupStep { DEV_OPTIONS, WIFI, WIRELESS_DEBUGGING, PAIR }
 
-/** One step at a time until HyperDebloat is connected. Each step checks itself and moves on. */
+/** One-time setup as a checklist. The step to do now is highlighted; each step ticks itself off. */
 @Composable
 fun SetupScreen(vm: MainViewModel) {
     val ctx = LocalContext.current
@@ -70,9 +65,9 @@ fun SetupScreen(vm: MainViewModel) {
     }
 
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.startPairing() }
-    fun open(action: String, fallback: String = Settings.ACTION_SETTINGS) {
+    fun open(action: String) {
         try { ctx.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {
-            ctx.startActivity(Intent(fallback).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
     SetupContent(
@@ -86,23 +81,11 @@ fun SetupScreen(vm: MainViewModel) {
             if (Build.VERSION.SDK_INT >= 33 &&
                 ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) notif.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.startPairing()
+            open(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
         },
         onPairCode = vm::pairInApp,
         onReports = vm::showReports,
     )
-}
-
-private class StepInfo(val icon: ImageVector, val title: String, val text: String)
-
-private fun info(step: SetupStep) = when (step) {
-    SetupStep.DEV_OPTIONS -> StepInfo(PhoneIcon, "Turn on Developer options",
-        "Open About phone and tap OS version 7 times.")
-    SetupStep.WIFI -> StepInfo(WifiIcon, "Connect to Wi-Fi",
-        "Any Wi-Fi works, including another phone's hotspot. Needed once after each restart.")
-    SetupStep.WIRELESS_DEBUGGING -> StepInfo(Icons.Filled.Build, "Turn on Wireless debugging",
-        "In Developer options, switch on Wireless debugging and tap Allow.")
-    SetupStep.PAIR -> StepInfo(Icons.Filled.Lock, "Pair HyperDebloat",
-        "Only needed once.")
 }
 
 @Composable
@@ -117,123 +100,95 @@ fun SetupContent(
     onPairCode: (String) -> Unit,
     onReports: () -> Unit,
 ) {
+    fun state(s: SetupStep) = when {
+        s.ordinal < step.ordinal -> StepState.DONE
+        s == step -> StepState.CURRENT
+        else -> StepState.LATER
+    }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp)) {
+        Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("HyperDebloat", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("HyperDebloat", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 TextButton(onClick = onReports) { Text("Reports") }
             }
-            Spacer(Modifier.height(8.dp))
-            StepDots(step.ordinal, SetupStep.entries.size)
+            Text("Removes junk apps from Xiaomi, Redmi and POCO phones.", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(20.dp))
+            Text("First, a one-time setup", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text("Follow the highlighted step. Each one ticks itself off.", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
 
-            AnimatedContent(targetState = step, label = "step", modifier = Modifier.weight(1f)) { s ->
-                val i = info(s)
-                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Box(
-                        Modifier.size(96.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(i.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(44.dp))
-                    }
-                    Spacer(Modifier.height(24.dp))
-                    Text("Step ${s.ordinal + 1} of ${SetupStep.entries.size}", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(6.dp))
-                    Text(i.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(8.dp))
-                    Text(i.text, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (s == SetupStep.PAIR) {
-                        Spacer(Modifier.height(20.dp))
-                        PairSteps()
-                    }
-                }
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                StepCard(1, "Turn on Developer options", state(SetupStep.DEV_OPTIONS),
+                    "This unlocks the hidden settings HyperDebloat needs.\n\nTap the button, then tap OS version 7 times. Come back here when it says you are a developer.",
+                    doneText = "Done", button = "Open About phone", onClick = onOpenAbout)
+                StepCard(2, "Connect to Wi-Fi", state(SetupStep.WIFI),
+                    "The next setting only works on Wi-Fi. Any Wi-Fi works, even another phone's hotspot. After the phone restarts, this is needed again once.",
+                    doneText = "Connected", button = "Open Wi-Fi settings", onClick = onOpenWifi)
+                StepCard(3, "Turn on Wireless debugging", state(SetupStep.WIRELESS_DEBUGGING),
+                    "This lets HyperDebloat remove apps, the same way a computer would.\n\nTap the button, find Wireless debugging, switch it on and tap Allow.",
+                    doneText = "On", button = "Open Developer options", onClick = onOpenDev)
+                StepCard(4, "Pair HyperDebloat", state(SetupStep.PAIR),
+                    "This connects HyperDebloat to your phone. You only do it once.",
+                    doneText = "Paired", extra = { PairExtra(pairingStatus, onStartPairing, onPairCode) })
             }
 
-            when (step) {
-                SetupStep.DEV_OPTIONS -> BigButton("Open About phone", onOpenAbout)
-                SetupStep.WIFI -> BigButton("Open Wi-Fi settings", onOpenWifi)
-                SetupStep.WIRELESS_DEBUGGING -> BigButton("Open Developer options", onOpenDev)
-                SetupStep.PAIR -> PairActions(pairingStatus, onStartPairing, onPairCode, onOpenDev)
-            }
-            Row(Modifier.fillMaxWidth().height(32.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 if (checking) {
                     CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
+                    Text("Checking...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Text("This screen moves on by itself.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
 }
 
 @Composable
-private fun PairSteps() {
+private fun PairExtra(status: String, onStart: () -> Unit, onCode: (String) -> Unit) {
+    var typeHere by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    Spacer(Modifier.height(12.dp))
     val lines = listOf(
-        "Tap Start pairing below.",
-        "In Wireless debugging, tap Pair device with pairing code.",
-        "Pull down notifications and type the 6-digit code into the HyperDebloat one.",
+        "Tap Start pairing. Developer options opens.",
+        "Tap Wireless debugging, then Pair device with pairing code. A 6-digit code appears.",
+        "Pull down the notification bar. Type the code into the HyperDebloat message and send it.",
     )
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         lines.forEachIndexed { n, l ->
             Row(verticalAlignment = Alignment.Top) {
-                Box(Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
-                    Text("${n + 1}", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Box(Modifier.size(22.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+                    Text("${n + 1}", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Text(l, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
-}
-
-@Composable
-private fun PairActions(status: String, onStart: () -> Unit, onCode: (String) -> Unit, onOpenDev: () -> Unit) {
-    var typeHere by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("") }
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        if (status.isNotEmpty()) {
-            Text(status, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
-        }
-        if (!typeHere) {
-            BigButton("Start pairing") { onStart(); onOpenDev() }
-            TextButton(onClick = { typeHere = true }) { Text("No box in the notification? Type the code here") }
-        } else {
-            Text("Use split screen with Settings, then type the code shown there.", style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = code,
-                onValueChange = { v -> code = v.filter { it.isDigit() }.take(6) },
-                label = { Text("6-digit code") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = { onCode(code) }, enabled = code.length == 6, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Pair") }
-            TextButton(onClick = { typeHere = false }) { Text("Back") }
-        }
+    if (status.isNotEmpty()) {
+        Spacer(Modifier.height(10.dp))
+        Text(status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
     }
-}
-
-@Composable
-fun BigButton(text: String, onClick: () -> Unit) {
-    Button(onClick = onClick, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-        Text(text, style = MaterialTheme.typography.titleMedium)
-    }
-}
-
-@Composable
-private fun StepDots(current: Int, total: Int) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (i in 0 until total) {
-            Box(
-                Modifier.weight(1f).height(4.dp).clip(CircleShape).background(
-                    if (i <= current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-                )
-            )
-        }
+    Spacer(Modifier.height(14.dp))
+    if (!typeHere) {
+        PulsingButton("Start pairing", onStart)
+        TextButton(onClick = { typeHere = true }, modifier = Modifier.fillMaxWidth()) { Text("No reply box in the message? Type the code here") }
+    } else {
+        Text("Open Settings and HyperDebloat side by side (split screen), then type the code shown in Settings.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = code,
+            onValueChange = { v -> code = v.filter { it.isDigit() }.take(6) },
+            label = { Text("6-digit code") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = { onCode(code) }, enabled = code.length == 6, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Pair") }
+        TextButton(onClick = { typeHere = false }, modifier = Modifier.fillMaxWidth()) { Text("Back") }
     }
 }

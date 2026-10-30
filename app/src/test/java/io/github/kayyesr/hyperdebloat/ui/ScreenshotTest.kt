@@ -2,6 +2,7 @@ package io.github.kayyesr.hyperdebloat.ui
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +63,7 @@ class ScreenshotTest {
         darkMode = dark
         current = content
         if (!started) {
-            compose.setContent { AppTheme(dark = darkMode) { key(current) { current?.invoke() } } }
+            compose.setContent { CompositionLocalProvider(LocalAnimate provides false) { AppTheme(dark = darkMode) { key(current) { current?.invoke() } } } }
             started = true
         }
         compose.waitForIdle()
@@ -82,20 +83,28 @@ class ScreenshotTest {
 
     @Test fun home() {
         val counts = mapOf(Tier.SAFE to 64, Tier.MODERATE to 41, Tier.HIGH to 22, Tier.UNSAFE to 58, Tier.FLAGGED to 37, Tier.APP to 12)
-        shot("2_home") { HomeContent(dev, counts, "16:42", false, "0.2.0", {}, {}, {}, {}, {}, {}) }
-        shot("2_home_dark", dark = true) { HomeContent(dev, counts, "16:42", false, "0.2.0", {}, {}, {}, {}, {}, {}) }
-        shot("2_home_not_scanned") { HomeContent(dev, null, "", false, "0.2.0", {}, {}, {}, {}, {}, {}) }
+        @Composable fun home(g: Guide, c: Map<Tier, Int>?) =
+            HomeContent(dev, c, g, false, false, "0.4.0", {}, {}, {}, {}, {}, {}, {}, {}, {})
+        shot("2_home_1_scan") { home(Guide.SCAN, null) }
+        shot("2_home_2_review") { home(Guide.REVIEW, counts) }
+        shot("2_home_3_restart") { home(Guide.RESTART, counts) }
+        shot("2_home_4_done") { home(Guide.DONE, counts) }
+        shot("2_home_dark", dark = true) { home(Guide.REVIEW, counts) }
     }
 
     @Test fun lists() {
-        shot("3_custom") { PickContent(PickSpec("Custom", rows, "Remove selected", true, "", true), apps) {} }
-        shot("3_custom_dark", dark = true) { PickContent(PickSpec("Custom", rows, "Remove selected", true, "", true), apps) {} }
+        val green = rows.filter { it.tier == Tier.SAFE || it.atSetup }
+        shot("3_remove_junk") { PickContent(PickSpec("Remove junk", green, "Remove selected", true, "", false, simple = true,
+            intro = "Junk is already ticked. Untick anything you want to keep, then tap Remove."), apps) {} }
+        shot("3_custom") { PickContent(PickSpec("Choose apps", rows, "Remove selected", true, "", true, intro = "Every app on the phone, colour-coded. Tap ⓘ to see why."), apps) {} }
+        shot("3_custom_dark", dark = true) { PickContent(PickSpec("Choose apps", rows, "Remove selected", true, "", true), apps) {} }
         val restore = listOf(
             Row(Tier.SAFE, "RESTORE", "com.miui.analytics", "Xiaomi Analytics telemetry.", "", "", "removed by HyperDebloat on 2026-10-28", action = RestoreAction.INSTALL),
             Row(Tier.SAFE, "UNFREEZE", "com.mi.globalbrowser", "Mi Browser.", "", "", "", action = RestoreAction.UNSUSPEND),
             Row(Tier.MODERATE, "PLAY STORE", "com.block.blast", "", "", "", "", action = RestoreAction.STORE),
         )
-        shot("4_restore") { PickContent(PickSpec("Restore", restore, "Restore selected", false, "", false), apps) {} }
+        shot("4_restore") { PickContent(PickSpec("Bring apps back", restore, "Restore selected", false, "", false, simple = true,
+            intro = "Tick the apps you want back, then tap Restore."), apps) {} }
     }
 
     @Test fun busy() {

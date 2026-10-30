@@ -123,14 +123,27 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
                 IconButton(onClick = { onDone(emptyList()) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 Column(Modifier.weight(1f)) {
                     Text(spec.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text("${spec.items.size} packages · $count selected", style = MaterialTheme.typography.bodySmall,
+                    Text(if (spec.simple) "$count of ${spec.items.size} ticked" else "${spec.items.size} packages · $count selected", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = { legend = true }) { Icon(Icons.Filled.Info, contentDescription = "What the colours mean", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
 
+            if (spec.intro.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer).padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(spec.intro, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             // Search
-            TextField(
+            if (!spec.simple) TextField(
                 value = search,
                 onValueChange = { search = it },
                 placeholder = { Text("Search apps") },
@@ -147,7 +160,7 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
             )
 
             // Categories
-            if (categories.size > 1) {
+            if (!spec.simple && categories.size > 1) {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item { FilterChip(selected = category.isEmpty(), onClick = { category = "" }, label = { Text("All") }) }
                     items(categories) { c -> FilterChip(selected = category == c, onClick = { category = if (category == c) "" else c }, label = { Text(c) }) }
@@ -163,15 +176,39 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
                     )
                 }
                 LazyColumn {
-                    items(visible, key = { it.pkg }) { r ->
-                        PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), onToggle = { toggle(r) }, onInfo = { details = r })
+                    if (spec.simple && spec.preselectBackground) {
+                        // Split into what was ticked for the user and what they decide themselves.
+                        val auto = visible.filter { it.tier == Tier.SAFE && !it.userApp && !it.locked }
+                        val decide = visible - auto.toSet()
+                        if (auto.isNotEmpty()) {
+                            item(key = "h1") { SectionHeader("Junk, ticked for you", "Ads, tracking and background extras. Nothing else needs them.") }
+                            items(auto, key = { it.pkg }) { r ->
+                                PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), simple = true, onToggle = { toggle(r) }, onInfo = { details = r })
+                            }
+                        }
+                        if (decide.isNotEmpty()) {
+                            item(key = "h2") { SectionHeader("You decide", "Safe to remove, but you may use these. Tick only the ones you don't want.") }
+                            items(decide, key = { it.pkg }) { r ->
+                                PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), simple = true, onToggle = { toggle(r) }, onInfo = { details = r })
+                            }
+                        }
+                    } else {
+                        items(visible, key = { it.pkg }) { r ->
+                            PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), simple = spec.simple, onToggle = { toggle(r) }, onInfo = { details = r })
+                        }
                     }
                 }
             }
 
             // Bottom bar
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).navigationBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
+            if (spec.simple) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp).navigationBarsPadding()) {
+                    val doneText = if (count > 0) "$verb $count ${if (count == 1) "app" else "apps"}" else "Tick the apps to ${verb.lowercase()}"
+                    if (count > 0) PulsingButton(doneText) { onDone(spec.items.filter { ticked[it.pkg] == true && selectable(it) }) }
+                    else Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(doneText) }
+                }
+            } else Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).navigationBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
                 if (spec.items.any { it.tier == Tier.SAFE && selectable(it) && it.action == null }) {
                     TextButton(onClick = { spec.items.filter { it.tier == Tier.SAFE && selectable(it) }.forEach { ticked[it.pkg] = true } }) { Text("All safe") }
                 }
@@ -237,14 +274,14 @@ private fun AppIcon(pkg: String, label: String, apps: AppLookup, size: Int = 40)
         Image(bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(size.dp))
     } else {
         Box(Modifier.size(size.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-            Text((label.ifEmpty { pkg.substringAfterLast('.') }).take(1).uppercase(), style = MaterialTheme.typography.titleMedium,
+            Text((label.ifEmpty { friendlyName(pkg) }).take(1).uppercase(), style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
-private fun PackageItem(r: PkgRow, label: String, apps: AppLookup, checked: Boolean, enabled: Boolean, onToggle: () -> Unit, onInfo: () -> Unit) {
+private fun PackageItem(r: PkgRow, label: String, apps: AppLookup, checked: Boolean, enabled: Boolean, simple: Boolean = false, onToggle: () -> Unit, onInfo: () -> Unit) {
     val style = badgeFor(r)
     val bg = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent
     Row(
@@ -256,14 +293,14 @@ private fun PackageItem(r: PkgRow, label: String, apps: AppLookup, checked: Bool
         AppIcon(r.pkg, label, apps)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(label.ifEmpty { r.pkg.substringAfterLast('.') }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+            Text(label.ifEmpty { friendlyName(r.pkg) }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(r.pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!simple) Text(r.pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                Badge(style)
+                if (!simple || r.action != null) Badge(style)
                 if (r.description.isNotEmpty()) {
-                    Spacer(Modifier.width(6.dp))
+                    if (!simple || r.action != null) Spacer(Modifier.width(6.dp))
                     Text(r.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -281,7 +318,7 @@ private fun DetailsSheet(r: PkgRow, label: String, apps: AppLookup, checked: Boo
             AppIcon(r.pkg, label, apps, size = 48)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(label.ifEmpty { r.pkg.substringAfterLast('.') }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(label.ifEmpty { friendlyName(r.pkg) }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(r.pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Badge(badgeFor(r))
@@ -302,5 +339,21 @@ private fun Field(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(2.dp))
         Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** A readable name when the phone has no label: "com.miui.msa.global" -> "Msa global". */
+fun friendlyName(pkg: String): String {
+    val skip = setOf("com", "android", "google", "miui", "xiaomi", "mi", "app", "apps", "org", "net", "io")
+    val parts = pkg.split('.').filter { it.isNotEmpty() && it.lowercase() !in skip }
+    val name = if (parts.isEmpty()) pkg.substringAfterLast('.') else parts.takeLast(2).joinToString(" ")
+    return name.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+@Composable
+private fun SectionHeader(title: String, text: String) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 6.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

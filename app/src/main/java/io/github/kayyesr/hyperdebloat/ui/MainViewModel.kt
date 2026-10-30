@@ -37,6 +37,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Where the user is in the guided flow on the home screen. */
+enum class Guide { SCAN, REVIEW, RESTART, DONE }
+
 sealed interface Screen {
     data object Setup : Screen
     data object Home : Screen
@@ -53,6 +56,10 @@ class PickSpec(
     val preselectBackground: Boolean,
     val noMatchHint: String,
     val allowFlagged: Boolean,
+    /** Simple mode: no package names, search or categories; the list is split into "ticked for you" and "you decide". */
+    val simple: Boolean = false,
+    /** One line at the top saying what to do on this screen. */
+    val intro: String = "",
 ) {
     internal val result = CompletableDeferred<List<Row>>()
 }
@@ -108,6 +115,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _saveRaw = MutableStateFlow(prefs.getBoolean("saveRaw", false))
     val saveRaw: StateFlow<Boolean> = _saveRaw
+
+    private val _guide = MutableStateFlow(Guide.SCAN)
+    val guide: StateFlow<Guide> = _guide
+
+    private var restartPending: Boolean
+        get() = prefs.getBoolean("restartPending", false)
+        set(v) = prefs.edit().putBoolean("restartPending", v).apply()
+    private var justRestarted: Boolean
+        get() = prefs.getBoolean("justRestarted", false)
+        set(v) = prefs.edit().putBoolean("justRestarted", v).apply()
+
+    private fun updateGuide() {
+        _guide.value = when {
+            restartPending -> Guide.RESTART
+            justRestarted && (needScan || rows == null) -> Guide.DONE
+            needScan || rows == null -> Guide.SCAN
+            else -> Guide.REVIEW
+        }
+    }
 
     private val _noWifi = MutableStateFlow(adb.noWifiMode)
     val noWifi: StateFlow<Boolean> = _noWifi
@@ -219,6 +245,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun onConnected() {
         if (connectPhone() == null) return
+        updateGuide()
         _screen.value = Screen.Home
         _noWifi.value = adb.noWifiMode
         when {
@@ -312,13 +339,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 working.set(false)
+                updateGuide()
                 if (_screen.value != Screen.Setup) _screen.value = Screen.Home
             }
         }
     }
 
     private suspend fun scan(dev: DeviceInfo): List<Row> {
-        busy("Scanning your phone")
+        busy("Checking your phone")
         val eng = engine!!
         step("Scanning the phone (read-only)")
         val sc = Scanner(shell, logger)
@@ -344,6 +372,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _counts.value = Tier.entries.associateWith { t -> result.count { it.tier == t } }
         _lastScan.value = SimpleDateFormat("HH:mm", Locale.US).format(Date())
         needScan = false
+        justRestarted = false
         return result
     }
 
@@ -366,8 +395,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         step("Recommended: ${green.size} packages")
-        val picked = pick(PickSpec("Recommended", green, "Remove selected", true,
-            "Recommended only shows safe apps. Use Custom to search everything.", false))
+        val picked = pick(PickSpec("Remove junk", green, "Remove selected", true,
+            "", false, simple = true,
+            intro = "Junk is already ticked. Untick anything you want to keep, then tap Remove."))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
         if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)
@@ -375,7 +405,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun custom(rows: List<Row>) {
         step("Custom")
-        var picked = pick(PickSpec("Custom", rows, "Remove selected", true, "", true))
+        var picked = pick(PickSpec("Choose apps", rows, "Remove selected", true, "", true,
+            intro = "Every app on the phone, colour-coded. Tap ⓘ to see why."))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
 
         val red = picked.filter { it.tier == Tier.UNSAFE }
@@ -426,6 +457,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = io { eng.finishRemoval(results) }
         if (s.removed + s.frozen > 0) {
             needScan = true
+            restartPending = true
             if (ask("Removed ${s.removed} of ${s.total}", "${s.frozenText}${s.failText}\n\nRestart the phone now? Then check calls, camera, GPS, payments and fingerprint.".trimStart(),
                     yes = "Restart", no = "Later")) reboot()
         } else notice("Nothing was removed", s.failText.trim(), true)
@@ -446,7 +478,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             notice("Nothing to restore", "Nothing has been removed or disabled on this phone.")
             return
         }
-        val picked = pick(PickSpec("Restore", items, "Restore selected", false, "", false))
+        val picked = pick(PickSpec("Bring apps back", items, "Restore selected", false, "", false, simple = true,
+            intro = "Tick the apps you want back, then tap Restore."))
         if (picked.isEmpty()) return
         busy("Restoring ${picked.size} apps")
         val lost = ArrayList<String>()
@@ -472,7 +505,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } else notice("Restore finished", "Nothing came back.$extra".trim())
     }
 
+    /** Home screen "Restart phone" step. */
+    fun restartNow() {
+        if (!working.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            try {
+                if (ask("Restart now?", "Your phone will restart. Open HyperDebloat again afterwards.", yes = "Restart", no = "Cancel")) reboot()
+            } finally {
+                working.set(false)
+                updateGuide()
+            }
+        }
+    }
+
+    /** "I'll restart later" on the home screen: skip the restart step. */
+    fun skipRestart() { restartPending = false; justRestarted = true; updateGuide() }
+
     private suspend fun reboot() {
+        restartPending = false
+        justRestarted = true
         io { adb.reboot() }
         _screen.value = Screen.Setup
         _setupStep.value = SetupStep.WIRELESS_DEBUGGING
