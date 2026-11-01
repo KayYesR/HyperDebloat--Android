@@ -10,7 +10,7 @@
 - Ticks only the safe junk for you, sorted into sections: ads and tracking, games, Xiaomi apps, Google apps and more.
 - Everything can be undone with **Bring apps back**.
 
-Tested on a POCO X8 Pro Max (HyperOS 3, Android 16). Android version of the Windows tool [HyperDebloat](https://github.com/KayYesR/HyperDebloat).
+ Android version of the Windows tool [HyperDebloat](https://github.com/KayYesR/HyperDebloat).
 
 <p>
 <img src="docs/screenshots/setup.png" width="190" alt="One-time setup">
