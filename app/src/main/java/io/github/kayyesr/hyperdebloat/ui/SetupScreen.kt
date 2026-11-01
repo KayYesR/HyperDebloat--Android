@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -58,6 +59,8 @@ fun SetupScreen(vm: MainViewModel) {
     val step by vm.setupStep.collectAsState()
     val checking by vm.checking.collectAsState()
     val pairing by PairingService.status.collectAsState()
+    val status by vm.adb.lastError.collectAsState()
+    val details by vm.adb.debug.collectAsState()
 
     // Re-check every few seconds while this screen is open, so steps tick off by themselves.
     LaunchedEffect(Unit) {
@@ -85,6 +88,9 @@ fun SetupScreen(vm: MainViewModel) {
         },
         onPairCode = vm::pairInApp,
         onReports = vm::showReports,
+        status = status,
+        details = details,
+        onPort = vm::connectPort,
     )
 }
 
@@ -99,7 +105,11 @@ fun SetupContent(
     onStartPairing: () -> Unit,
     onPairCode: (String) -> Unit,
     onReports: () -> Unit,
+    status: String = "",
+    details: List<String> = emptyList(),
+    onPort: (Int) -> Unit = {},
 ) {
+    var showDetails by remember { mutableStateOf(false) }
     fun state(s: SetupStep) = when {
         s.ordinal < step.ordinal -> StepState.DONE
         s == step -> StepState.CURRENT
@@ -128,10 +138,11 @@ fun SetupContent(
                     doneText = "Connected", button = "Open Wi-Fi settings", onClick = onOpenWifi)
                 StepCard(3, "Turn on Wireless debugging", state(SetupStep.WIRELESS_DEBUGGING),
                     "This lets HyperDebloat remove apps, the same way a computer would.\n\nTap the button, find Wireless debugging, switch it on and tap Allow.",
-                    doneText = "On", button = "Open Developer options", onClick = onOpenDev)
+                    doneText = "On", button = "Open Developer options", onClick = onOpenDev,
+                    extra = { PortEntry(onPort) })
                 StepCard(4, "Pair HyperDebloat", state(SetupStep.PAIR),
                     "This connects HyperDebloat to your phone. You only do it once.",
-                    doneText = "Paired", extra = { PairExtra(pairingStatus, onStartPairing, onPairCode) })
+                    doneText = "Paired", extra = { PairExtra(pairingStatus, onStartPairing, onPairCode); PortEntry(onPort) })
             }
 
             Spacer(Modifier.height(16.dp))
@@ -139,7 +150,24 @@ fun SetupContent(
                 if (checking) {
                     CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
-                    Text("Checking...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(if (checking) "Checking..." else status.ifEmpty { "Waiting for you" }, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!checking && status.isNotEmpty()) Spacer(Modifier.height(2.dp))
+            TextButton(onClick = { showDetails = !showDetails }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (showDetails) "Hide details" else "Stuck? Show details")
+            }
+            if (showDetails) {
+                Text("Send this to the developer if it stays stuck.", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceContainer).padding(10.dp)) {
+                    if (details.isEmpty()) Text("Nothing yet.", style = MaterialTheme.typography.bodySmall)
+                    for (l in details.takeLast(25)) {
+                        Text(l, style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            color = if (l.contains("  !")) Color(0xFFE07A10) else MaterialTheme.colorScheme.onSurface)
+                    }
                 }
             }
         }
@@ -190,5 +218,33 @@ private fun PairExtra(status: String, onStart: () -> Unit, onCode: (String) -> U
         Spacer(Modifier.height(8.dp))
         Button(onClick = { onCode(code) }, enabled = code.length == 6, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Pair") }
         TextButton(onClick = { typeHere = false }, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+    }
+}
+
+/** Fallback when the phone's announcement is not found: type the port shown under Wireless debugging. */
+@Composable
+private fun PortEntry(onPort: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    var port by remember { mutableStateOf("") }
+    if (!open) {
+        TextButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) { Text("Already on but stuck? Enter the port") }
+        return
+    }
+    Spacer(Modifier.height(10.dp))
+    Text("Open Wireless debugging. Under IP address & Port, type the number after the colon (for example 192.168.1.5:37145 → 37145).",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = port,
+            onValueChange = { v -> port = v.filter { it.isDigit() }.take(5) },
+            label = { Text("Port") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = { port.toIntOrNull()?.let(onPort) }, enabled = (port.toIntOrNull() ?: 0) in 1..65535,
+            modifier = Modifier.height(56.dp)) { Text("Connect") }
     }
 }

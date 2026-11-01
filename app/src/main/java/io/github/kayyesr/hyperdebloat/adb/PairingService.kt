@@ -123,6 +123,7 @@ class PairingService : Service() {
 
     private fun finish() {
         searching = false
+        AdbManager.get(this).stopPairingSearch()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

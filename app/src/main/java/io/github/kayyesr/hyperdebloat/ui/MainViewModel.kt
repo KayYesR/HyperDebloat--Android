@@ -212,7 +212,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // No Wi-Fi mode is tried first; wireless debugging only when Wi-Fi is connected.
                 val ok = io { adb.tryConnect(wireless = wifi) }
                 if (ok) {
-                    if (_screen.value == Screen.Setup) onConnected()
+                    if (_screen.value == Screen.Setup) {
+                        try {
+                            adb.debug("Reading phone details")
+                            onConnected()
+                        } catch (e: Exception) {
+                            adb.debug("! Reading phone details failed: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
+                        }
+                    }
                 } else {
                     _setupStep.value = when {
                         !wifi -> SetupStep.WIFI
@@ -229,6 +236,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startPairing() = PairingService.start(getApplication())
+
+    /** Connects to a port the user typed from the Wireless debugging screen. */
+    fun connectPort(port: Int) {
+        if (!connecting.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            _checking.value = true
+            try {
+                when (io { adb.connectPort(port) }) {
+                    AdbManager.ConnectResult.OK -> onConnected()
+                    AdbManager.ConnectResult.NOT_PAIRED -> {
+                        _setupStep.value = SetupStep.PAIR
+                        notice("Not paired yet", "The phone answered on that port but does not know HyperDebloat yet. Do the pairing step.")
+                    }
+                    AdbManager.ConnectResult.FAILED -> notice("Could not connect",
+                        "Nothing answered on port $port. Check the number after the colon under IP address & Port in Wireless debugging.", true)
+                }
+            } finally {
+                _checking.value = false
+                connecting.set(false)
+            }
+        }
+    }
 
     /** Pairing with the code typed in the app (split screen next to Settings). */
     fun pairInApp(code: String) {

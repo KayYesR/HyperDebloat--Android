@@ -5,7 +5,6 @@ import android.os.Build
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import io.github.muntashirakon.adb.AdbPairingRequiredException
 import io.github.muntashirakon.adb.AdbStream
-import io.github.muntashirakon.adb.android.AdbMdns
 import io.github.muntashirakon.adb.android.AndroidUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -58,7 +57,25 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     private val _lastError = MutableStateFlow("")
     val lastError: StateFlow<String> = _lastError
 
+    /** Connection steps, newest last. Shown under "Show details" on the setup screen, so a stuck connect can be explained. */
+    private val _debug = MutableStateFlow<List<String>>(emptyList())
+    val debug: StateFlow<List<String>> = _debug
+    private val timeFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+    fun debug(line: String) {
+        val l = "${timeFmt.format(java.util.Date())}  $line"
+        _debug.value = (_debug.value + l).takeLast(60)
+        android.util.Log.i("HyperDebloat", line)
+    }
+
+    private val connectFinder by lazy { PortFinder(context, PortFinder.CONNECT, ::debug) }
+    private val pairFinder by lazy { PortFinder(context, PortFinder.PAIRING, ::debug) }
+
     private val prefs = context.getSharedPreferences("adb", Context.MODE_PRIVATE)
+
+    /** Last port Wireless debugging was reached on. It stays the same until Wireless debugging is switched off. */
+    private var savedPort: Int
+        get() = prefs.getInt("tlsPort", -1)
+        set(v) = prefs.edit().putInt("tlsPort", v).apply()
     var everPaired: Boolean
         get() = prefs.getBoolean("paired", false)
         private set(v) = prefs.edit().putBoolean("paired", v).apply()
@@ -131,40 +148,94 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
 
     /**
      * Connects: first the local port (No Wi-Fi mode), then wireless debugging if [wireless] is allowed.
+     * Wireless debugging's port is taken from this phone's own announcement, or the last port that worked.
      * Blocking; call off the main thread.
      */
     fun tryConnect(wireless: Boolean = true): Boolean {
         if (isConnected) { _state.value = State.CONNECTED; return true }
         _state.value = State.CHECKING
-        if (noWifiMode && connectLocal(20)) {
-            _state.value = State.CONNECTED; _lastError.value = ""
-            return true
+        if (noWifiMode) {
+            debug("Trying no-Wi-Fi port $LOCAL_PORT")
+            if (connectLocal(20)) {
+                debug("Connected without Wi-Fi")
+                _state.value = State.CONNECTED; _lastError.value = ""
+                return true
+            }
         }
         if (!wireless) {
             _state.value = State.NOT_REACHABLE
             _lastError.value = "Wi-Fi is off."
             return false
         }
-        return try {
-            connectedLocally = false
-            val ok = autoConnect(context, 6000)
-            _state.value = if (ok || isConnected) State.CONNECTED else State.NOT_REACHABLE
-            if (_state.value == State.CONNECTED) { everPaired = true; _lastError.value = "" }
-            _state.value == State.CONNECTED
-        } catch (e: AdbPairingRequiredException) {
-            everPaired = false
-            _state.value = State.NOT_PAIRED
-            _lastError.value = "Not paired yet."
-            false
-        } catch (e: InterruptedException) {
+        connectFinder.start()
+        // The first time, give the announcement a few seconds to arrive.
+        val deadline = System.currentTimeMillis() + 5000
+        while (connectFinder.port <= 0 && System.currentTimeMillis() < deadline) Thread.sleep(250)
+        val ports = listOf(connectFinder.port, savedPort).filter { it > 0 }.distinct()
+        if (ports.isEmpty()) {
             _state.value = State.NOT_REACHABLE
-            _lastError.value = "Wireless debugging is off."
-            false
-        } catch (e: Exception) {
-            _state.value = State.NOT_REACHABLE
-            _lastError.value = "Could not connect: ${e.message ?: e.javaClass.simpleName}"
-            false
+            _lastError.value = "Wireless debugging not found yet. Check it is switched on."
+            return false
         }
+        for (p in ports) {
+            when (connectPort(p)) {
+                ConnectResult.OK -> return true
+                ConnectResult.NOT_PAIRED -> return false
+                ConnectResult.FAILED -> continue
+            }
+        }
+        _state.value = State.NOT_REACHABLE
+        return false
+    }
+
+    enum class ConnectResult { OK, NOT_PAIRED, FAILED }
+
+    /** Connects to Wireless debugging on [port] (from the announcement, or typed by the user). */
+    fun connectPort(port: Int): ConnectResult {
+        if (isConnected) return ConnectResult.OK
+        for (host in hosts()) {
+            debug("Connecting to $host:$port")
+            try {
+                setTimeout(12, TimeUnit.SECONDS)
+                connectedLocally = false
+                if (connect(host, port) || isConnected) {
+                    debug("Connected")
+                    savedPort = port
+                    everPaired = true
+                    _lastError.value = ""
+                    _state.value = State.CONNECTED
+                    connectFinder.stop()
+                    return ConnectResult.OK
+                }
+                debug("! No answer from $host:$port")
+            } catch (e: AdbPairingRequiredException) {
+                debug("! Phone says: not paired")
+                try { disconnect() } catch (_: Exception) { }
+                everPaired = false
+                _state.value = State.NOT_PAIRED
+                _lastError.value = "Not paired yet."
+                return ConnectResult.NOT_PAIRED
+            } catch (e: Exception) {
+                debug("! $host:$port failed: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
+                try { disconnect() } catch (_: Exception) { }
+                _lastError.value = "Could not connect to port $port."
+            } finally {
+                setTimeout(20, TimeUnit.SECONDS)
+            }
+        }
+        return ConnectResult.FAILED
+    }
+
+    /** This phone's own addresses: loopback first, then its Wi-Fi address. */
+    private fun hosts(): List<String> {
+        val wifi = try {
+            java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
+                .filter { it.isUp && !it.isLoopback && it.name.startsWith("wlan") }
+                .flatMap { java.util.Collections.list(it.inetAddresses) }
+                .filterIsInstance<java.net.Inet4Address>()
+                .mapNotNull { it.hostAddress }
+        } catch (_: Exception) { emptyList() }
+        return listOf("127.0.0.1") + wifi
     }
 
     /**
@@ -217,34 +288,33 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
      * Returns the port, or -1 if nothing was found within [timeoutMs].
      */
     fun findPairingPort(timeoutMs: Long): Int {
-        val port = AtomicInteger(-1)
-        val latch = CountDownLatch(1)
-        val mdns = AdbMdns(context, AdbMdns.SERVICE_TYPE_TLS_PAIRING) { _: InetAddress?, p: Int ->
-            if (p > 0) { port.set(p); latch.countDown() }
-        }
-        mdns.start()
-        try {
-            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        } finally {
-            mdns.stop()
-        }
-        return port.get()
+        pairFinder.start()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (pairFinder.port <= 0 && System.currentTimeMillis() < deadline) Thread.sleep(250)
+        return pairFinder.port
     }
+
+    /** Stops looking for the pairing service (after pairing, or when cancelled). */
+    fun stopPairingSearch() = pairFinder.stop()
 
     /** Pairs with the 6-digit code, then connects. Returns null on success, or the error text. */
     fun pairAndConnect(port: Int, code: String): String? {
         val clean = code.filter { it.isDigit() }
         if (clean.length != 6) return "The code has 6 digits."
         val err = AtomicReference<String?>(null)
+        debug("Pairing on port $port")
         try {
             pair(AndroidUtils.getHostIpAddress(context), port, clean)
         } catch (e: Exception) {
+            debug("! Pairing failed: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
             err.set("Wrong or expired code. Open Pair device with pairing code again for a new one.")
         }
         if (err.get() != null) { _lastError.value = err.get()!!; return err.get() }
+        debug("Paired")
         everPaired = true
-        // The connect service appears a moment after pairing.
-        for (i in 0 until 3) {
+        pairFinder.stop()
+        // The connect announcement can take a moment after pairing.
+        for (i in 0 until 4) {
             if (tryConnect()) return null
             Thread.sleep(1500)
         }
@@ -259,7 +329,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             var stream: AdbStream? = null
             try {
                 stream = openStream("shell:$command")
-                readLines(stream, onLine)
+                readLinesWatched(stream, onLine)
                 return
             } catch (e: Exception) {
                 lastError = e
@@ -269,6 +339,30 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             }
         }
         throw IOException("Command failed: $command (${lastError?.message})", lastError)
+    }
+
+    /** Like readLines, but gives up if the phone sends nothing for [idleSec] seconds, so a stuck command cannot freeze the app. */
+    private fun readLinesWatched(stream: AdbStream, onLine: (String) -> Unit, idleSec: Long = 60) {
+        val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+        val watchdog = Thread {
+            while (!done.get()) {
+                try { Thread.sleep(1000) } catch (_: InterruptedException) { return@Thread }
+                if (System.currentTimeMillis() - last.get() > idleSec * 1000) {
+                    timedOut.set(true)
+                    try { stream.close() } catch (_: Exception) { }
+                    return@Thread
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        try {
+            readLines(stream) { last.set(System.currentTimeMillis()); onLine(it) }
+        } finally {
+            done.set(true)
+            watchdog.interrupt()
+        }
+        if (timedOut.get()) throw IOException("The phone stopped answering")
     }
 
     private fun readLines(stream: AdbStream, onLine: (String) -> Unit) {
