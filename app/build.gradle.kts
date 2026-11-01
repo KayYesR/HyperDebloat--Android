@@ -16,8 +16,8 @@ android {
         // Wireless debugging pairing exists from Android 11 on.
         minSdk = 30
         targetSdk = 35
-        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 5
-        versionName = (project.findProperty("versionName") as String?) ?: "0.4.1"
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 6
+        versionName = (project.findProperty("versionName") as String?) ?: "0.4.2"
         // Phones only; leaving out the x86 copies of the TLS library keeps the APK smaller.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }

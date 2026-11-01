@@ -61,9 +61,13 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     private val _debug = MutableStateFlow<List<String>>(emptyList())
     val debug: StateFlow<List<String>> = _debug
     private val timeFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+    /** Also sends connection steps to the progress screen's details. */
+    @Volatile var echo: ((String) -> Unit)? = null
+
     fun debug(line: String) {
         val l = "${timeFmt.format(java.util.Date())}  $line"
         _debug.value = (_debug.value + l).takeLast(60)
+        echo?.invoke(line)
         android.util.Log.i("HyperDebloat", line)
     }
 
@@ -87,7 +91,9 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         setTimeout(20, TimeUnit.SECONDS)
     }
 
-    override fun getPrivateKey(): PrivateKey = keyMaterial.first
+    // A fresh key object each time: the library destroys the key it was given when a connection closes.
+    override fun getPrivateKey(): PrivateKey =
+        KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(keyMaterial.first.encoded))
     override fun getCertificate(): Certificate = keyMaterial.second
     override fun getDeviceName(): String = DEVICE_NAME
 
@@ -246,7 +252,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         if (connectedLocally && isConnected) { noWifiMode = true; return null }
         if (!isConnected && !tryConnect()) return "Not connected."
         try {
-            val s = openStream("tcpip:$LOCAL_PORT")
+            val s = openGuarded("tcpip:$LOCAL_PORT")
             try { readLines(s) { } } catch (_: Exception) { }
         } catch (e: Exception) {
             return "The phone refused: ${e.message ?: e.javaClass.simpleName}"
@@ -254,11 +260,12 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         lost()
         noWifiMode = true
         // The ADB service takes a moment to restart; then the phone may ask to allow this app (up to a minute).
-        val deadline = System.currentTimeMillis() + 75_000
+        val deadline = System.currentTimeMillis() + 45_000
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(1500)
-            if (connectLocal(60)) { _state.value = State.CONNECTED; return null }
+            if (connectLocal(30)) { _state.value = State.CONNECTED; debug("No-Wi-Fi mode on"); return null }
         }
+        debug("! No-Wi-Fi mode did not start")
         noWifiMode = false
         return "Could not connect without Wi-Fi. If the phone asked \"Allow USB debugging?\", tap Always allow and try again."
     }
@@ -268,7 +275,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         noWifiMode = false
         if (connectedLocally && isConnected) {
             try {
-                val s = openStream("usb:")
+                val s = openGuarded("usb:")
                 try { readLines(s) { } } catch (_: Exception) { }
             } catch (_: Exception) { }
             lost()
@@ -328,7 +335,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             if (!isConnected && !tryConnect()) throw IOException(_lastError.value.ifEmpty { "Not connected to wireless debugging" })
             var stream: AdbStream? = null
             try {
-                stream = openStream("shell:$command")
+                stream = openGuarded("shell:$command")
                 readLinesWatched(stream, onLine)
                 return
             } catch (e: Exception) {
@@ -365,6 +372,34 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         if (timedOut.get()) throw IOException("The phone stopped answering")
     }
 
+    /**
+     * Opens a service with a time limit. The library waits forever for the phone to accept a new stream; if the
+     * connection silently died (for example after a Wi-Fi change), that wait never ends. After [timeoutMs] the
+     * connection is closed, which ends the wait with an error.
+     */
+    private fun openGuarded(destination: String, timeoutMs: Long = 15_000): AdbStream {
+        val conn = adbConnection ?: throw IOException("Not connected")
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+        val watchdog = Thread {
+            try { Thread.sleep(timeoutMs) } catch (_: InterruptedException) { return@Thread }
+            if (!done.get()) {
+                timedOut.set(true)
+                debug("! The phone did not answer \"${destination.take(40)}\" - reconnecting")
+                try { conn.close() } catch (_: Exception) { }
+            }
+        }.apply { isDaemon = true; start() }
+        try {
+            return conn.open(destination)
+        } catch (e: Exception) {
+            if (timedOut.get()) { lost(); throw IOException("The phone stopped answering") }
+            throw e
+        } finally {
+            done.set(true)
+            watchdog.interrupt()
+        }
+    }
+
     private fun readLines(stream: AdbStream, onLine: (String) -> Unit) {
         val reader = BufferedReader(InputStreamReader(stream.openInputStream(), Charsets.UTF_8))
         while (true) {
@@ -380,7 +415,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     /** Restarts the phone (adb reboot). The connection ends with it. */
     fun reboot() {
         try {
-            val s = openStream("reboot:")
+            val s = openGuarded("reboot:")
             try { readLines(s) { } } catch (_: Exception) { }
         } catch (_: Exception) {
             try { shell("svc power reboot") { } } catch (_: Exception) { }

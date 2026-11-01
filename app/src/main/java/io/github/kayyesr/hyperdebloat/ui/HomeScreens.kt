@@ -136,12 +136,12 @@ fun HomeContent(
                         DropdownMenuItem(text = { Text("Reports") }, onClick = { menu = false; onReports() })
                         DropdownMenuItem(
                             text = { Text("Work without Wi-Fi") },
-                            trailingIcon = { Checkbox(checked = noWifi, onCheckedChange = null) },
+                            trailingIcon = { Checkbox(checked = noWifi, onCheckedChange = { menu = false; onNoWifi(it) }) },
                             onClick = { menu = false; onNoWifi(!noWifi) },
                         )
                         DropdownMenuItem(
                             text = { Text("Save raw output for bug reports") },
-                            trailingIcon = { Checkbox(checked = saveRaw, onCheckedChange = null) },
+                            trailingIcon = { Checkbox(checked = saveRaw, onCheckedChange = { onSaveRaw(it) }) },
                             onClick = { onSaveRaw(!saveRaw) },
                         )
                         DropdownMenuItem(text = { Text("Version $version", color = MaterialTheme.colorScheme.onSurfaceVariant) }, onClick = { menu = false })
@@ -184,8 +184,6 @@ fun HomeContent(
                 OptionRow("Choose apps yourself", "For experienced users. Shows every app with its risk level.", onCustom)
             }
             Spacer(Modifier.height(24.dp))
-            Text("Made by kayyesr, perfected by Claude.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

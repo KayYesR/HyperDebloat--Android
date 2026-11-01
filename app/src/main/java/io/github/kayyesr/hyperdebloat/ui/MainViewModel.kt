@@ -150,6 +150,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var deviceKey = ""
 
     init {
+        adb.echo = { logger.line("  $it") }
         refreshSetup()
     }
 
@@ -277,29 +278,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updateGuide()
         _screen.value = Screen.Home
         _noWifi.value = adb.noWifiMode
-        when {
-            // Turned on before, but the phone restarted since: switch it back on quietly.
-            adb.noWifiMode && !adb.connectedLocally -> io { adb.enableNoWifiMode() }
-            !adb.noWifiMode && !prefs.getBoolean("noWifiOffered", false) -> {
-                prefs.edit().putBoolean("noWifiOffered", true).apply()
-                if (ask("Use without Wi-Fi?", "HyperDebloat can stay connected after you turn Wi-Fi off, until the phone restarts. " +
-                        "After a restart it needs Wi-Fi once again.\n\nYour phone may ask \"Allow USB debugging?\". Tap Always allow, " +
-                        "but only when HyperDebloat asks.", yes = "Turn on", no = "Not now")) setNoWifi(true)
-            }
-        }
+        // Turned on before, but the phone restarted since: switch it back on.
+        if (adb.noWifiMode && !adb.connectedLocally) setNoWifi(true, quiet = true)
     }
 
+    private val noWifiDialogText = "HyperDebloat stays connected after you turn Wi-Fi off, until the phone restarts. " +
+        "After a restart it needs Wi-Fi once again.\n\nYour phone may ask \"Allow USB debugging?\". Tap Always allow, but only when HyperDebloat asks."
+
     /** Turns No Wi-Fi mode on or off (Home menu). */
-    fun setNoWifi(on: Boolean) {
+    fun setNoWifi(on: Boolean, quiet: Boolean = false) {
         if (!working.compareAndSet(false, true)) return
         viewModelScope.launch {
             try {
                 if (on) {
-                    busy("Switching to no Wi-Fi")
+                    if (!quiet && !ask("Work without Wi-Fi?", noWifiDialogText, yes = "Turn on", no = "Cancel")) return@launch
+                    busy("Turning on Work without Wi-Fi")
                     logger.line("If the phone asks \"Allow USB debugging?\", tap Always allow.")
                     val err = io { adb.enableNoWifiMode() }
-                    if (err != null) notice("Could not switch", err, true)
-                    else notice("Done", "You can turn Wi-Fi off now. After the phone restarts, HyperDebloat needs Wi-Fi once to switch this back on.")
+                    if (err != null) notice("Could not turn it on", err, true)
+                    else if (!quiet) notice("Done", "You can turn Wi-Fi off now. After the phone restarts, HyperDebloat needs Wi-Fi once to switch this back on.")
                 } else {
                     io { adb.disableNoWifiMode() }
                 }
@@ -342,6 +339,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun run(action: Action) {
         if (!working.compareAndSet(false, true)) return
+        // Show progress straight away, so a tap never looks ignored while the phone is being reached.
+        busy("Connecting to your phone")
+        adb.debug("Action: ${action.name.lowercase()}")
         viewModelScope.launch {
             try {
                 val dev = connectPhone() ?: return@launch
