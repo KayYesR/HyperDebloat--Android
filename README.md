@@ -2,63 +2,128 @@
 
 # HyperDebloat for Android
 
-> Tested on a POCO X8 Pro Max (HyperOS 3, Android 16). Reports from other Xiaomi, Redmi and POCO phones are welcome: turn on **Save raw output for bug reports** in the ⋮ menu, run a check, and attach `raw_adb_output.txt`, `connection_log.txt` and the report CSV (all under **Reports**) to an issue.
+**Remove junk apps from Xiaomi, Redmi and POCO phones, on the phone itself. No root, no PC, no second app.**
 
-The Android version of [HyperDebloat](https://github.com/KayYesR/HyperDebloat), the device-aware debloater for Xiaomi, Redmi and POCO phones running HyperOS or MIUI. It runs on the phone itself over **wireless debugging**: no root, no PC, no second app.
+[**⬇ Download the latest version**](https://github.com/KayYesR/HyperDebloat--Android/releases/latest)
 
-It reads every package and running process on **your** phone and rates each package from what the phone itself reports about it. Community debloat lists are used only to describe packages and to cross-check the phone's verdict. The rating rules are the same as in the Windows version.
+- Checks every app on **your** phone and rates how safe it is to remove: from what the phone itself reports, cross-checked with three community debloat lists.
+- Ticks only the safe junk for you, sorted into sections: ads and tracking, games, Xiaomi apps, Google apps and more.
+- Everything can be undone with **Bring apps back**.
 
-| Colour | Rating | Meaning |
+Tested on a POCO X8 Pro Max (HyperOS 3, Android 16). Android version of the Windows tool [HyperDebloat](https://github.com/KayYesR/HyperDebloat).
+
+<p>
+<img src="docs/screenshots/setup.png" width="190" alt="One-time setup">
+<img src="docs/screenshots/home.png" width="190" alt="Clean your phone in 3 steps">
+<img src="docs/screenshots/remove-junk.png" width="190" alt="Remove junk, in sections">
+<img src="docs/screenshots/bring-back.png" width="190" alt="Bring apps back">
+</p>
+
+## What you need
+
+- A Xiaomi, Redmi or POCO phone with **Android 11 or newer** (HyperOS, or MIUI on Android 11 or newer).
+- **Wi-Fi.** Any network works, including another phone's hotspot, and it does not need internet. Your phone's own hotspot does not work: Android does not allow it.
+- About **10 minutes** the first time. After that, opening the app is enough.
+
+## 1. Install
+
+1. Open the [latest release](https://github.com/KayYesR/HyperDebloat--Android/releases/latest) on your phone and tap **HyperDebloat-x.x.x.apk** to download it.
+2. Open the downloaded file. If the phone asks, allow your browser or file manager to install apps.
+3. If a security scan warns you about an unknown app, choose to install anyway. HyperDebloat is open source: everything it does is in this repository.
+
+> **Installed a test build before?** Uninstall it first. Releases are signed with a different key, so Android will not install one over a test build.
+
+## 2. One-time setup
+
+Open HyperDebloat. It shows five steps, highlights the one to do now, and ticks each off by itself. A bar at the bottom always says what the app is waiting for.
+
+| Step | What to do |
+|---|---|
+| **1. Allow notifications** | Tap **Allow notifications**, then **Allow**. You will type the pairing code into a notification; that is all it is used for. |
+| **2. Developer options** | Tap **Open About phone**, then tap **OS version** 7 times until it says you are a developer. Come back to HyperDebloat. |
+| **3. Wi-Fi** | Connect to any Wi-Fi network. |
+| **4. Wireless debugging** | Tap **Open Developer options** (on HyperOS: Settings › Additional settings › Developer options). Scroll to **Wireless debugging**, switch it on and tap **Allow**. |
+| **5. Pair** | Tap **Start pairing**. In Developer options, tap the words **Wireless debugging** (not the switch), then **Pair device with pairing code**. A 6-digit code appears. Pull down the notification bar, tap **Enter code** on the HyperDebloat notification, type the code and send it. |
+
+Pairing is needed only once. If the notification has no **Enter code** box, tap **No reply box in the message? Type the code here** in HyperDebloat and use split screen (Settings on one half, HyperDebloat on the other).
+
+## 3. Clean your phone
+
+| Step | What happens |
+|---|---|
+| **1. Check your phone** | Tap **Check now**. HyperDebloat reads every app and rates it. Nothing is changed. The bar at the bottom shows how far it has got. |
+| **2. Remove junk** | Tap **Review and remove**. The removable apps are listed in sections. **Safe** junk is already ticked. Look through each section, untick anything you use, then tap **Remove**. |
+| **3. Restart your phone** | Tap **Restart now**. Afterwards, check calls, camera, GPS, payments and fingerprint. |
+
+Tip: open the apps you use most just before **Check now**, so the check can see what they rely on.
+
+### What the colours mean
+
+| Label | Meaning | Ticked for you? |
 |---|---|---|
-| 🟢 Green | SAFE | Independent app. The phone and all three lists agree it can go. Ticked for you. |
-| 🟩 Light green | MOSTLY OK | Very likely junk, but not every source confirms it: two lists agree and the phone sees nothing using it, or all three lists agree and something small uses it. Not ticked for you. |
-| 🟡 Yellow | MODERATE | A minor feature may stop working. |
-| 🟠 Orange | HIGH | A notable or core feature may stop working. |
-| 🔴 Red | UNSAFE | Can stop the phone booting or working properly. |
-| ⚪ Grey | FLAGGED | Unknown to every list, contradicts the lists, or the phone gave no data. Never ticked for you; in Custom you can tick it after a warning. |
-| 🔵 Blue | APP | Ordinary app (not a system app). Never ticked for you; setup-installed apps are tagged. |
+| 🟢 **Safe** | The phone and all three lists agree it is junk. | Yes |
+| 🟩 **Mostly okay** | Very likely junk, but not every source confirms it. | No: your choice |
+| 🟡 **Minor risk** | A small feature may stop working. | No |
+| 🟠 **Risky** | A notable feature may stop working. | No, and it cannot be ticked in Remove junk |
+| 🔴 **Unsafe** | Can stop the phone working properly. | No, and it cannot be ticked in Remove junk |
+| ⚪ **Unknown** | No list knows what it does. | No |
+| 🔵 **App** | An ordinary app (installed by you or at setup). | No |
 
-## Requirements
+Tap **ⓘ** on any app to see why it got its rating.
 
-- Android 11 or newer (wireless debugging pairing does not exist on Android 10 and older; use the [Windows version](https://github.com/KayYesR/HyperDebloat) for those phones).
-- A Wi-Fi connection, so that wireless debugging can be switched on. Any network works, including another phone's hotspot; it does not need internet (but the debloat lists are downloaded when it has internet).
+**Essential Google apps** (Play Store, Play services, Google app, Chrome, Gmail, YouTube, Meet, Maps) have their own box with one line of advice each. They are never ticked for you. Play Store and Play services can never be removed.
 
-### Staying connected
+### Other options
 
-Android switches Wireless debugging off by itself whenever Wi-Fi disconnects or the phone moves to a different access point (a mesh system, or a router that switches between 2.4 and 5 GHz). HyperDebloat then shows **Reconnect** with the step that is off; everything already done stays ticked, and the last check is kept for 12 hours. When the connection drops, `connection_log.txt` under Reports shows when Wi-Fi dropped and when Wireless debugging was switched off. **Work without Wi-Fi** (below) avoids most of these drops.
+- **Bring apps back**: undo. Lists everything removed, disabled or frozen, by HyperDebloat or any other tool. Tick what you want back and tap **Restore**.
+- **Choose apps yourself**: for experienced users. Every app on the phone, colour-coded, with search. Opening it and going back is a way to see the ratings without changing anything.
+- **⋮ menu**: **Reports** (saved check results and logs, tap to share), **Work without Wi-Fi** ([see below](#work-without-wi-fi)).
 
-### Without Wi-Fi
+## Troubleshooting
 
-Android only allows wireless debugging while the phone is connected to a Wi-Fi network as a client; its own hotspot does not count. The only tools that remove that limit need root ([nowifi-adb](https://github.com/iflyabd/nowifi-adb), [hotspotadb](https://github.com/droserasprout/io.drsr.hotspotadb)).
+**It shows "Reconnect" and asks me to turn Wireless debugging on again.**
+Normal. Android switches Wireless debugging off by itself whenever Wi-Fi disconnects or the phone moves to another access point (mesh Wi-Fi, or a router switching between 2.4 and 5 GHz). It may also be off after a restart. Turn it back on; pairing and your last check (for 12 hours) are kept. To avoid this, turn on **Work without Wi-Fi** in the ⋮ menu.
 
-Without root, HyperDebloat offers **Work without Wi-Fi** (⋮ menu): after connecting once over Wi-Fi, the phone's ADB service also listens on `127.0.0.1:5555` (the same as `adb tcpip 5555`, and the same idea as the TCP mode in [thedjchi's Shizuku](https://github.com/thedjchi/Shizuku/wiki/Features)). You can then turn Wi-Fi off. Android closes that port when the phone restarts, so Wi-Fi is needed once after each restart; HyperDebloat switches the mode back on by itself. While it is on, other devices on the same network can ask for ADB access too: the phone shows an "Allow USB debugging?" prompt, and you should only allow it when HyperDebloat asks.
+**Pairing does not finish.**
+Keep the **Pair device with pairing code** screen open while you type the code. If the code is wrong or expired, close that screen, open it again for a new code, and send the new one.
 
-## Install
+**The notification has no box to type the code.**
+Use **Type the code here** in HyperDebloat with split screen (see step 5).
 
-Download `HyperDebloat-<version>.apk` from [Releases](https://github.com/KayYesR/HyperDebloat--Android/releases) and open it on the phone. Allow installing from your browser or file manager when asked.
+**The phone asks "Allow USB debugging?"**
+Tap **Always allow** only when HyperDebloat just asked for it (turning on **Work without Wi-Fi**). Otherwise tap **Cancel**.
 
-## How to use
+**The check failed.**
+Tap **Try again**. If it fails again, tap **Show details** and send the text to the developer (see [Reporting a problem](#reporting-a-problem)).
 
-The app walks you through setup one step at a time and moves on by itself. The step to do now is highlighted, and a bar at the bottom shows what the app is doing.
+**Some apps were frozen instead of removed.**
+HyperOS refuses to remove some apps. HyperDebloat then freezes them: they stay installed but greyed out, cannot open and show no notifications. **Bring apps back** unfreezes them.
 
-1. **Allow notifications**, so you can type the pairing code into one.
-2. Turn on **Developer options** (About phone, tap **OS version** 7 times).
-3. Connect to **Wi-Fi**. Any network works, including another phone's hotspot.
-4. Turn on **Wireless debugging** in Developer options.
-5. **Pair** (first time only): tap **Start pairing**, tap **Pair device with pairing code** in Wireless debugging, then type the 6-digit code into the HyperDebloat notification. No reply box in the notification? Tap **Type the code here** and use split screen.
+**A removed app came back.**
+Some apps are put back by updates. The next **Check now** removes it again, and freezes it if it comes back a second time.
 
-Then clean the phone in three steps:
+**Something stopped working after removing apps.**
+Open **Bring apps back**, tick the app (the description says what it does) and tap **Restore**, then restart.
 
-1. **Check your phone**: reads every app and rates it. Nothing is changed.
-2. **Remove junk**: the removable apps in sections (Ads & tracking, Games, Media & music, Xiaomi apps, and so on). Safe junk is already ticked; untick anything you want to keep and tap **Remove**.
-3. **Restart your phone**.
+**My phone does not start any more.**
+This can only happen if you removed apps marked Unsafe with **Choose apps yourself**. Without a computer, the only fix may be a factory reset, which erases the phone. Unsafe and Risky apps cannot be ticked in Remove junk.
 
-Other options:
+## Reporting a problem
 
-- **Bring apps back**: restores anything removed, disabled or frozen, by this app or any other tool.
-- **Choose apps yourself**: every app, colour-coded, with search. Tap **ⓘ** to see why a package got its rating.
+Open an [issue](https://github.com/KayYesR/HyperDebloat--Android/issues) with your phone model and HyperOS version. Attach files from **⋮ › Reports** (tap a file to share it):
 
-Open the apps you use most before checking, so the check can see what they depend on. To see the ratings without changing anything, open **Choose apps yourself** and go back.
+- `connection_log.txt`: for connection or pairing problems.
+- `error_log.txt`: when something stopped with an error.
+- the latest `report_….csv`: for a wrong rating.
+- `raw_adb_output.txt`: turn on **⋮ › Save raw output for bug reports** first, then run **Check now** again.
+
+## Privacy
+
+HyperDebloat collects nothing and has no ads or analytics. Its only internet use is downloading the three public debloat lists from GitHub, at most once a day. Everything else stays on your phone.
+
+# How it works
+
+The rest of this page is for the curious and for developers.
 
 ## How ratings are decided
 
@@ -138,9 +203,15 @@ Without root, no tool can stop Android putting an app back. HyperDebloat does wh
 
 If you want an app back that you removed, use **Bring apps back** (not the Play Store), so the app knows to leave it alone.
 
+## Work without Wi-Fi
+
+Android only allows wireless debugging while the phone is connected to a Wi-Fi network as a client; its own hotspot does not count. The only tools that remove that limit need root ([nowifi-adb](https://github.com/iflyabd/nowifi-adb), [hotspotadb](https://github.com/droserasprout/io.drsr.hotspotadb)).
+
+Without root, HyperDebloat offers **Work without Wi-Fi** (⋮ menu): after connecting once over Wi-Fi, the phone's ADB service also listens on `127.0.0.1:5555` (the same as `adb tcpip 5555`, and the same idea as the TCP mode in [thedjchi's Shizuku](https://github.com/thedjchi/Shizuku/wiki/Features)). You can then turn Wi-Fi off. Android closes that port when the phone restarts, so Wi-Fi is needed once after each restart; HyperDebloat switches the mode back on by itself. While it is on, other devices on the same network can ask for ADB access too: the phone shows an "Allow USB debugging?" prompt, and you should only allow it when HyperDebloat asks.
+
 ## Releasing (maintainer notes)
 
-Pushing a tag such as `v0.1.0` builds a signed APK and attaches it to a GitHub release. The workflow needs four repository secrets (Settings > Secrets and variables > Actions):
+To release, push the code to `main`, then on GitHub open **Releases › Draft a new release**, create a new tag such as `v0.7.1` and publish it. The tag starts the build workflow, which builds a signed APK and attaches it to that release a few minutes later. Release version codes are 100 plus the workflow run number, so they always increase. The workflow needs four repository secrets (Settings > Secrets and variables > Actions):
 
 | Secret | Value |
 |---|---|
