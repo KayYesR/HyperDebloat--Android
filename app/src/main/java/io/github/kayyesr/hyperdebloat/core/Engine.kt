@@ -95,13 +95,38 @@ class Engine(
 
     private fun isOk(res: String) = res.startsWith("Success", true) || res.startsWith("Suspended", true)
 
-    /** Step 1: remove each package (no freezing yet). */
+    /**
+     * Step 1: remove the packages (no freezing yet). Several removals go to the phone in one command, and one
+     * package list afterwards checks which are really gone (some HyperOS versions answer Success and keep the app).
+     */
     fun removeFirstPass(items: List<Row>, progress: (Int, Int, Row, String) -> Unit): MutableList<Result> {
         shell.run("logcat -G 16M")
         val updated = updatedSystemApps()
+        val raw = HashMap<String, String>()
+        var done = 0
+        for (chunk in items.chunked(15)) {
+            val cmd = chunk.joinToString("; ") { r ->
+                val p = requirePackageName(r.pkg)
+                (if (updated.contains(p.lowercase())) "pm uninstall-system-updates $p >/dev/null 2>&1; " else "") +
+                    "echo '@@$p'; pm uninstall -k --user 0 $p 2>&1"
+            }
+            var cur: String? = null
+            shell.stream(cmd) { line ->
+                if (line.startsWith("@@")) { cur = line.substring(2).trim(); raw[cur!!.lowercase()] = "" }
+                else cur?.let { c -> raw[c.lowercase()] = (raw[c.lowercase()].orEmpty() + " " + line).trim() }
+            }
+            done += chunk.size
+            log.line("Removed $done of ${items.size}...")
+        }
+        val stillThere = packageSet("pm list packages --user 0")
         val results = ArrayList<Result>()
         items.forEachIndexed { i, it ->
-            val res = removeOnePackage(it.pkg, updated.contains(it.pkg.lowercase()), noFreeze = true)
+            val k = it.pkg.lowercase()
+            var res = raw[k].orEmpty().ifEmpty { "No answer from the phone" }
+            if (res.startsWith("Success", true)) {
+                res = if (stillThere.containsKey(k)) "Phone said Success, but the app is still installed"
+                else "Success" + if (updated.contains(k)) " (update removed first)" else ""
+            }
             progress(i + 1, items.size, it, res)
             results.add(Result(nowS(), it.pkg, it.risk, res, it.description))
         }
@@ -230,7 +255,7 @@ class Engine(
         lines.add(""); lines.add("==== phone log lines about these apps or app installs")
         val names = Regex(back.joinToString("|") { Regex.escape(it) }, I)
         val rInstall = Regex("install-existing|installExisting|installPackage|PackageInstaller", I)
-        shell.stream("logcat -d") { l -> if (names.containsMatchIn(l) || rInstall.containsMatchIn(l)) lines.add(l) }
+        shell.streamLarge("logcat -d") { l -> if (names.containsMatchIn(l) || rInstall.containsMatchIn(l)) lines.add(l) }
         try { storage.writeText(file, lines.joinToString("\n"), export = true) } catch (_: Exception) { }
         log.line("! ${back.size} app(s) removed earlier are back: ${back.joinToString(", ")}")
 
@@ -308,9 +333,9 @@ class Engine(
         val rEnabled3 = Regex("\\benabled=3\\b", I)
         val rSusp = Regex("\\binstalled=true\\b.*\\bsuspended=true\\b", I)
         var cur: String? = null
-        shell.stream("dumpsys package packages") { line ->
-            rPackage.find(line)?.let { cur = it.groupValues[1]; return@stream }
-            val c = cur ?: return@stream
+        shell.streamLarge("dumpsys package packages") { line ->
+            rPackage.find(line)?.let { cur = it.groupValues[1]; return@streamLarge }
+            val c = cur ?: return@streamLarge
             if (installed.containsKey(c.lowercase()) && rUser0.containsMatchIn(line)) {
                 if (rEnabled3.containsMatchIn(line)) disabled.add(c)
                 if (rSusp.containsMatchIn(line)) suspended.add(c)

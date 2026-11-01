@@ -45,7 +45,12 @@ class ScreenshotTest {
     private val rows = listOf(
         Row(Tier.SAFE, "SAFE", "com.miui.analytics", "Xiaomi Analytics telemetry.", "GREEN: nothing depends on it", "UAD-ng: Recommended | fadeltd: safe | ovsky: phase1_safe", "phone rates it GREEN", category = "Ads & tracking"),
         Row(Tier.SAFE, "SAFE", "com.miui.msa.global", "System ad engine that profiles usage for ads.", "", "", "", category = "Ads & tracking"),
-        Row(Tier.SAFE, "SAFE", "com.google.android.youtube", "YouTube.", "", "", "", userApp = true, category = "Google apps"),
+        Row(Tier.SAFE, "SAFE", "com.google.android.youtube", "YouTube.", "", "", "", userApp = true, category = "Essential Google apps",
+            note = "Remove only if you don't use YouTube."),
+        Row(Tier.UNSAFE, "UNSAFE", "com.android.vending", "Google Play Store.", "", "", "", userApp = true, category = "Essential Google apps",
+            note = "Keep. Needed to install and update apps."),
+        Row(Tier.MOSTLY, "MOSTLY OK", "com.miui.player", "Mi Music player.", "", "", "", category = "Media & music"),
+        Row(Tier.SAFE, "SAFE", "com.xiaomi.glgm", "Xiaomi game centre.", "", "", "", category = "Games"),
         Row(Tier.MODERATE, "MODERATE", "com.mi.globalbrowser", "Mi Browser.", "", "", "", category = "Xiaomi & phone apps"),
         Row(Tier.HIGH, "HIGH", "com.miui.weather2", "Weather app and widget data.", "", "", "", category = "Xiaomi & phone apps"),
         Row(Tier.UNSAFE, "UNSAFE", "com.miui.securitycenter", "Security app (permissions, cleaner, battery).", "", "", "", category = "Xiaomi services"),
@@ -82,18 +87,22 @@ class ScreenshotTest {
     private val dev = DeviceInfo("Xiaomi", "POCO", "25098PN5AI", "POCO X8 Pro Max", "dagda", "OS3.0", "OS3.0.5.0.WOQINXM", "16", 36)
 
     @Test fun home() {
-        val counts = mapOf(Tier.SAFE to 64, Tier.MODERATE to 41, Tier.HIGH to 22, Tier.UNSAFE to 58, Tier.FLAGGED to 37, Tier.APP to 12)
+        val counts = mapOf(Tier.SAFE to 41, Tier.MOSTLY to 23, Tier.MODERATE to 41, Tier.HIGH to 22, Tier.UNSAFE to 58, Tier.FLAGGED to 37, Tier.APP to 12)
         @Composable fun home(g: Guide, c: Map<Tier, Int>?) =
             HomeContent(dev, c, g, false, false, "0.4.0", {}, {}, {}, {}, {}, {}, {}, {}, {})
         shot("2_home_1_scan") { home(Guide.SCAN, null) }
         shot("2_home_2_review") { home(Guide.REVIEW, counts) }
         shot("2_home_3_restart") { home(Guide.RESTART, counts) }
         shot("2_home_4_done") { home(Guide.DONE, counts) }
+        shot("2_home_5_failed") {
+            HomeContent(dev, null, Guide.SCAN, false, false, "0.5.0", {}, {}, {}, {}, {}, {}, {}, {}, {},
+                scanError = "Command failed: dumpsys package packages (The phone stopped answering)")
+        }
         shot("2_home_dark", dark = true) { home(Guide.REVIEW, counts) }
     }
 
     @Test fun lists() {
-        val green = rows.filter { it.tier == Tier.SAFE || it.atSetup }
+        val green = rows.filter { it.tier == Tier.SAFE || it.tier == Tier.MOSTLY || it.atSetup || it.category == "Essential Google apps" }
         shot("3_remove_junk") { PickContent(PickSpec("Remove junk", green, "Remove selected", true, "", false, simple = true,
             intro = "Junk is already ticked. Untick anything you want to keep, then tap Remove."), apps) {} }
         shot("3_custom") { PickContent(PickSpec("Choose apps", rows, "Remove selected", true, "", true, intro = "Every app on the phone, colour-coded. Tap ⓘ to see why."), apps) {} }

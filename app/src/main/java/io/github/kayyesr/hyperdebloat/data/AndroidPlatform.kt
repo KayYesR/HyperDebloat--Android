@@ -75,12 +75,62 @@ class AndroidStorage(private val context: Context) : Storage {
 }
 
 /** Runs commands over wireless debugging. With [saveRaw], output is also written to raw_adb_output.txt. */
-class AdbShell(private val adb: AdbManager, private val storage: AndroidStorage, private val saveRaw: () -> Boolean) : Shell {
+class AdbShell(
+    private val adb: AdbManager,
+    private val storage: AndroidStorage,
+    private val saveRaw: () -> Boolean,
+    private val progress: (String) -> Unit = {},
+) : Shell {
     override fun stream(command: String, onLine: (String) -> Unit) {
         if (!saveRaw()) { adb.shell(command, onLine); return }
         val raw = StringBuilder("##### adb shell $command\n")
         adb.shell(command) { raw.append(it).append('\n'); onLine(it) }
         storage.appendText("raw_adb_output.txt", raw.append('\n').toString())
+    }
+
+    /**
+     * Very large outputs are written to a file on the phone first, then read back in pieces. One huge answer over
+     * wireless debugging was seen to stall; pieces keep each transfer small, and the size shows up in the log.
+     */
+    override fun streamLarge(command: String, onLine: (String) -> Unit) {
+        val tmp = "/data/local/tmp/hyperdebloat_${System.nanoTime()}.txt"
+        val t0 = System.currentTimeMillis()
+        try {
+            val info = run("$command > $tmp 2>/dev/null; wc -l < $tmp; wc -c < $tmp")
+            val lines = info.getOrNull(0)?.trim()?.toIntOrNull()
+            val bytes = info.getOrNull(1)?.trim()?.toLongOrNull() ?: 0L
+            if (lines == null) {
+                adb.debug("! Could not save \"$command\" on the phone; reading it directly")
+                stream(command, onLine)
+                return
+            }
+            adb.debug("\"$command\": ${bytes / 1024} KB, $lines lines, ready in ${(System.currentTimeMillis() - t0) / 1000.0} s")
+            val chunk = 15_000
+            var start = 1
+            var read = 0L
+            while (start <= lines) {
+                val end = minOf(start + chunk - 1, lines)
+                stream("sed -n '$start,${end}p' $tmp") { read += it.length + 1; onLine(it) }
+                progress("  Read ${"%.1f".format(read / 1048576.0)} of ${"%.1f".format(bytes / 1048576.0)} MB")
+                start = end + 1
+            }
+            adb.debug("Read \"$command\" in ${(System.currentTimeMillis() - t0) / 1000.0} s")
+        } finally {
+            try { run("rm -f $tmp") } catch (_: Exception) { }
+        }
+    }
+
+    /** Small commands, up to four at a time, each on its own stream of the same connection. */
+    override fun runAll(commands: List<String>): Map<String, List<String>> {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val futures = commands.associateWith { c -> pool.submit<List<String>> { run(c) } }
+            return futures.mapValues { (_, f) -> f.get() }
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw e.cause ?: e
+        } finally {
+            pool.shutdownNow()
+        }
     }
 }
 

@@ -13,12 +13,16 @@ object CommunityLists {
         "ovsky" to "https://raw.githubusercontent.com/ovsky/hyperos-debloater/main/data/config/services.json",
     )
 
-    /** Downloads each list fresh, keeping the last saved copy when the download fails. */
-    fun load(storage: Storage, fetcher: Fetcher, log: Log): Map<String, Any?> {
+    /**
+     * Loads the lists. A saved copy younger than [maxAgeMs] is used as it is (no download); otherwise the list is
+     * downloaded, keeping the last saved copy when the download fails.
+     */
+    fun load(storage: Storage, fetcher: Fetcher, log: Log, maxAgeMs: Long = 24L * 3600 * 1000): Map<String, Any?> {
         val result = LinkedHashMap<String, Any?>()
         for ((name, url) in URLS) {
             val file = "cache/$name.json"
-            try {
+            val fresh = storage.exists(file) && System.currentTimeMillis() - storage.lastModified(file) < maxAgeMs
+            if (fresh) log.line("$name list: saved copy (less than a day old)") else try {
                 val text = fetcher.fetch(url)
                 Json.parse(text) // only replace the cache with valid JSON
                 storage.writeText(file, text)

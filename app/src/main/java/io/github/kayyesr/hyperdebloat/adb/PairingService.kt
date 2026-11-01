@@ -81,6 +81,11 @@ class PairingService : Service() {
 
     private fun startSearch() {
         if (searching) return
+        if (AdbManager.get(this).isConnected) {
+            _status.value = "Already connected."
+            finish()
+            return
+        }
         searching = true
         _status.value = "Waiting. Tap Pair device with pairing code in Wireless debugging."
         worker.execute {

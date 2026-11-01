@@ -50,7 +50,7 @@ import androidx.core.content.ContextCompat
 import io.github.kayyesr.hyperdebloat.adb.PairingService
 import kotlinx.coroutines.delay
 
-enum class SetupStep { DEV_OPTIONS, WIFI, WIRELESS_DEBUGGING, PAIR }
+enum class SetupStep { NOTIFY, DEV_OPTIONS, WIFI, WIRELESS_DEBUGGING, PAIR }
 
 /** One-time setup as a checklist. The step to do now is highlighted; each step ticks itself off. */
 @Composable
@@ -67,7 +67,8 @@ fun SetupScreen(vm: MainViewModel) {
         while (true) { vm.refreshSetup(); delay(3000) }
     }
 
-    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.startPairing() }
+    // Asked first, on its own step, so it never pops up while the pairing code is on screen.
+    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.refreshSetup() }
     fun open(action: String) {
         try { ctx.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {
             ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -81,11 +82,15 @@ fun SetupScreen(vm: MainViewModel) {
         onOpenWifi = { open(Settings.ACTION_WIFI_SETTINGS) },
         onOpenDev = { open(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS) },
         onStartPairing = {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) notif.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.startPairing()
+            vm.startPairing()
             open(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
         },
+        onAllowNotifications = {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) notif.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.refreshSetup()
+        },
+        onSkipNotifications = vm::skipNotifications,
         onPairCode = vm::pairInApp,
         onReports = vm::showReports,
         status = status,
@@ -108,6 +113,8 @@ fun SetupContent(
     status: String = "",
     details: List<String> = emptyList(),
     onPort: (Int) -> Unit = {},
+    onAllowNotifications: () -> Unit = {},
+    onSkipNotifications: () -> Unit = {},
 ) {
     var showDetails by remember { mutableStateOf(false) }
     fun state(s: SetupStep) = when {
@@ -130,17 +137,21 @@ fun SetupContent(
             Spacer(Modifier.height(16.dp))
 
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                StepCard(1, "Turn on Developer options", state(SetupStep.DEV_OPTIONS),
+                StepCard(1, "Allow notifications", state(SetupStep.NOTIFY),
+                    "HyperDebloat shows a notification so you can type the pairing code into it. That is all it is used for.",
+                    doneText = "Allowed", button = "Allow notifications", onClick = onAllowNotifications,
+                    secondary = "Not now", onSecondary = onSkipNotifications)
+                StepCard(2, "Turn on Developer options", state(SetupStep.DEV_OPTIONS),
                     "This unlocks the hidden settings HyperDebloat needs.\n\nTap the button, then tap OS version 7 times. Come back here when it says you are a developer.",
                     doneText = "Done", button = "Open About phone", onClick = onOpenAbout)
-                StepCard(2, "Connect to Wi-Fi", state(SetupStep.WIFI),
-                    "The next setting only works on Wi-Fi. Any Wi-Fi works, even another phone's hotspot. After the phone restarts, this is needed again once.",
+                StepCard(3, "Connect to Wi-Fi", state(SetupStep.WIFI),
+                    "The next setting only works on Wi-Fi. Any Wi-Fi works, including another phone's hotspot. This phone's own hotspot does not work: Android does not allow it.",
                     doneText = "Connected", button = "Open Wi-Fi settings", onClick = onOpenWifi)
-                StepCard(3, "Turn on Wireless debugging", state(SetupStep.WIRELESS_DEBUGGING),
+                StepCard(4, "Turn on Wireless debugging", state(SetupStep.WIRELESS_DEBUGGING),
                     "This lets HyperDebloat remove apps, the same way a computer would.\n\nTap the button, find Wireless debugging, switch it on and tap Allow.",
                     doneText = "On", button = "Open Developer options", onClick = onOpenDev,
                     extra = { PortEntry(onPort) })
-                StepCard(4, "Pair HyperDebloat", state(SetupStep.PAIR),
+                StepCard(5, "Pair HyperDebloat", state(SetupStep.PAIR),
                     "This connects HyperDebloat to your phone. You only do it once.",
                     doneText = "Paired", extra = { PairExtra(pairingStatus, onStartPairing, onPairCode); PortEntry(onPort) })
             }

@@ -1,6 +1,8 @@
 package io.github.kayyesr.hyperdebloat.ui
 
 import android.content.Intent
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -86,8 +88,26 @@ fun HomeScreen(vm: MainViewModel) {
     val guide by vm.guide.collectAsState()
     val saveRaw by vm.saveRaw.collectAsState()
     val noWifi by vm.noWifi.collectAsState()
+    val scanError by vm.scanError.collectAsState()
+    val log by vm.log.collectAsState()
+    var showLog by remember { mutableStateOf(false) }
+    if (showLog) {
+        AlertDialog(
+            onDismissRequest = { showLog = false },
+            title = { Text("What happened") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    Text("Send this to the developer if it keeps failing.", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    for (l in log.takeLast(40)) Text(l, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showLog = false }) { Text("Close") } },
+        )
+    }
     HomeContent(
         device = dev, counts = counts, guide = guide, saveRaw = saveRaw, noWifi = noWifi, version = vm.version,
+        scanError = scanError, onDetails = { showLog = true },
         onScan = { vm.run(Action.RESCAN) },
         onReview = { vm.run(Action.RECOMMENDED) },
         onRestart = vm::restartNow,
@@ -117,11 +137,14 @@ fun HomeContent(
     onReports: () -> Unit,
     onSaveRaw: (Boolean) -> Unit,
     onNoWifi: (Boolean) -> Unit,
+    scanError: String? = null,
+    onDetails: () -> Unit = {},
 ) {
     var menu by remember { mutableStateOf(false) }
     val active = when (guide) { Guide.SCAN -> 0; Guide.REVIEW -> 1; Guide.RESTART -> 2; Guide.DONE -> 3 }
     fun state(i: Int) = when { i < active -> StepState.DONE; i == active -> StepState.CURRENT; else -> StepState.LATER }
     val safe = counts?.get(Tier.SAFE) ?: 0
+    val mostly = counts?.get(Tier.MOSTLY) ?: 0
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -157,22 +180,29 @@ fun HomeContent(
                 Text("Follow the highlighted step.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(16.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StepCard(1, "Check your phone", state(0),
+                    if (scanError != null && state(0) == StepState.CURRENT) {
+                        StepCard(1, "Check failed", StepState.CURRENT,
+                            "The check stopped: $scanError\n\nTry again. If it fails again, tap Show details and send it to the developer.",
+                            button = "Try again", onClick = onScan, secondary = "Show details", onSecondary = onDetails)
+                    } else StepCard(1, "Check your phone", state(0),
                         "Looks at every app on your phone and works out which ones are safe to remove. Nothing is changed yet.",
-                        doneText = "$safe apps can be removed safely", button = "Check now", onClick = onScan)
+                        doneText = "$safe safe, $mostly mostly okay. Tap to check again.", button = "Check now", onClick = onScan,
+                        onCardClick = onScan)
                     StepCard(2, "Remove junk", state(1),
-                        "Shows the apps that are safe to remove. Junk is already ticked for you; untick anything you want to keep.",
-                        doneText = "Done", button = "Review and remove", onClick = onReview,
+                        "Shows the apps that can be removed, in sections. Safe junk is already ticked; untick anything you want to keep.",
+                        doneText = "Done. Tap to open the list again.", button = "Review and remove", onClick = onReview,
+                        onCardClick = onReview,
                         extra = {
                             if (counts != null) {
                                 Spacer(Modifier.height(6.dp))
-                                Text("$safe apps are safe to remove.", style = MaterialTheme.typography.bodyMedium,
+                                Text("$safe apps are safe to remove, and $mostly more are mostly okay.", style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
                             }
                         })
                     StepCard(3, "Restart your phone", state(2),
                         "Restarting makes the changes take effect. Open HyperDebloat again afterwards.",
-                        button = "Restart now", onClick = onRestart, secondary = "I'll restart later", onSecondary = onSkipRestart)
+                        button = "Restart now", onClick = onRestart, secondary = "I'll restart later", onSecondary = onSkipRestart,
+                        onCardClick = onRestart)
                 }
             }
 

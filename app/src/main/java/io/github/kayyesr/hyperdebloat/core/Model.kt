@@ -2,12 +2,14 @@ package io.github.kayyesr.hyperdebloat.core
 
 /** Rating tiers, numbered as in the PowerShell version (0 = flagged, 5 = ordinary app). */
 enum class Tier(val code: Int, val label: String, val colour: String, val sortOrder: Int) {
-    FLAGGED(0, "FLAGGED", "GREY", 5),
+    FLAGGED(0, "FLAGGED", "GREY", 6),
     SAFE(1, "SAFE", "GREEN", 1),
-    MODERATE(2, "MODERATE", "YELLOW", 2),
-    HIGH(3, "HIGH", "ORANGE", 3),
-    UNSAFE(4, "UNSAFE", "RED", 4),
-    APP(5, "APP", "BLUE", 6);
+    /** Phone sees no dependency and two of the three lists agree (or all three lists agree but something minor uses it). */
+    MOSTLY(6, "MOSTLY OK", "LIGHT GREEN", 2),
+    MODERATE(2, "MODERATE", "YELLOW", 3),
+    HIGH(3, "HIGH", "ORANGE", 4),
+    UNSAFE(4, "UNSAFE", "RED", 5),
+    APP(5, "APP", "BLUE", 7);
 
     companion object {
         fun of(code: Int): Tier = entries.first { it.code == code }
@@ -36,6 +38,8 @@ class PackageFacts {
     var installer = ""
     var userDisabled = false
     var userSuspended = false
+    /** Current default browser (only matters for the Chrome advice). */
+    var defaultBrowser = false
 }
 
 /** What a restore row does when ticked. */
@@ -60,6 +64,8 @@ data class Row(
     val atSetup: Boolean = false,
     val locked: Boolean = false,
     val action: RestoreAction? = null,
+    /** Plain advice shown under the name (essential Google apps). */
+    val note: String = "",
 )
 
 /** One community-list entry. */
@@ -113,6 +119,12 @@ interface Shell {
 
     /** All output joined with spaces and trimmed, like (Invoke-Shell ...) -join ' '. */
     fun text(command: String): String = run(command).joinToString(" ").trim()
+
+    /** For commands with very large output (dumpsys package, logcat). The phone version reads these in pieces. */
+    fun streamLarge(command: String, onLine: (String) -> Unit) = stream(command, onLine)
+
+    /** Runs several small commands. The phone version runs them at the same time. */
+    fun runAll(commands: List<String>): Map<String, List<String>> = commands.associateWith { run(it) }
 }
 
 /** App storage. Paths are relative to the work folder (the PowerShell Documents\HyperDebloat folder). */

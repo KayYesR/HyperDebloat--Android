@@ -7,7 +7,11 @@ class Scanner(private val shell: Shell, private val log: Log) {
     private fun rx(p: String) = Regex(p, I)
 
     fun deviceInfo(): DeviceInfo {
-        fun p(name: String) = shell.run("getprop $name").joinToString("").trim()
+        // One command for all properties: lines look like "[ro.product.model]: [25098PN5AI]".
+        val props = HashMap<String, String>()
+        val rProp = Regex("^\\[([^\\]]+)\\]: \\[(.*)\\]$")
+        for (l in shell.run("getprop")) rProp.find(l.trim())?.let { props[it.groupValues[1]] = it.groupValues[2] }
+        fun p(name: String) = props[name].orEmpty().trim()
         val model = p("ro.product.model")
         var build = p("ro.mi.os.version.incremental")
         if (build.isEmpty()) build = p("ro.build.version.incremental")
@@ -74,8 +78,30 @@ class Scanner(private val shell: Shell, private val log: Log) {
         }
     }
 
+    private val ICONS = "cmd package query-activities --user 0 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER"
+    private val SERVICES = "dumpsys activity services"
+    private val PROVIDERS = "dumpsys activity providers"
+    private val OVERLAYS = "cmd overlay list --user 0"
+    private fun role(r: String) = "cmd role get-role-holders --user 0 android.app.role.$r"
+    private val IME = "settings get secure default_input_method"
+    private val ADMINS = "dumpsys device_policy"
+    private val LOCATION = listOf(
+        "com.android.location.service.v3.NetworkLocationProvider",
+        "com.android.location.service.v2.NetworkLocationProvider",
+        "com.android.location.service.FusedLocationProvider",
+        "com.android.location.service.GeocodeProvider",
+        "com.android.location.service.GeofenceProvider",
+    ).joinToString("; ") { "cmd package query-services --user 0 -a $it" }
+    private val PROCESSES = "ps -A -o NAME"
+
     /** Facts for every installed package, keyed by lower-case package name. */
     fun deviceFacts(installed: Map<String, String>): HashMap<String, PackageFacts> {
+        // The small reads run together first (on the phone they run at the same time).
+        log.line("Reading app connections, roles and processes...")
+        val small = shell.runAll(listOf(ICONS, SERVICES, PROVIDERS, OVERLAYS, role("HOME"), role("DIALER"), role("SMS"),
+            role("BROWSER"), IME, ADMINS, LOCATION, PROCESSES))
+        fun out(c: String) = small[c].orEmpty()
+
         val facts = HashMap<String, PackageFacts>()
         for (k in installed.keys) facts[k] = PackageFacts()
         fun f(pkg: String?): PackageFacts? = if (pkg.isNullOrEmpty()) null else facts[pkg.lowercase()]
@@ -110,19 +136,19 @@ class Scanner(private val shell: Shell, private val log: Log) {
         val rPrivileged = rx("(^|[\\s_])PRIVILEGED(\\s|$)")
         val rPrivApp = rx("/priv-app/")
 
-        shell.stream("dumpsys package packages") { line ->
+        shell.streamLarge("dumpsys package packages") { line ->
             if (line.isNotEmpty() && !line[0].isWhitespace()) {
                 inPk = rSection.containsMatchIn(line)
                 cur = null; permMode = ""
-                return@stream
+                return@streamLarge
             }
-            if (!inPk) return@stream
+            if (!inPk) return@streamLarge
             rPackage.find(line)?.let { m ->
                 cur = m.groupValues[1]; permMode = ""
                 f(cur)?.seen = true
-                return@stream
+                return@streamLarge
             }
-            val c = cur ?: return@stream
+            val c = cur ?: return@streamLarge
             val fc = f(c)
             val indent = line.length - line.trimStart().length
 
@@ -135,40 +161,40 @@ class Scanner(private val shell: Shell, private val log: Log) {
                     } else {
                         rGranted.find(line)?.let { m -> granted.getOrPut(c.lowercase()) { HashSet() }.add(m.groupValues[1].lowercase()) }
                     }
-                    return@stream
+                    return@streamLarge
                 }
                 permMode = ""
             }
-            rPermHead.find(line)?.let { m -> permMode = m.groupValues[1]; permIndent = indent; return@stream }
+            rPermHead.find(line)?.let { m -> permMode = m.groupValues[1]; permIndent = indent; return@streamLarge }
 
             rSig.find(line)?.let { m ->
                 if (c.equals("android", ignoreCase = true) && androidSig.isEmpty()) androidSig = m.groupValues[1]
                 if (fc != null && fc.signature.isEmpty()) fc.signature = m.groupValues[1]
-                return@stream
+                return@streamLarge
             }
-            if (fc == null) return@stream
+            if (fc == null) return@streamLarge
             val mId = rId.find(line)
             if (mId != null) {
                 val id = mId.groupValues[2].toIntOrNull()
                 if (id != null && (fc.appId == null || id < fc.appId!!)) fc.appId = id
-                return@stream
+                return@streamLarge
             }
-            rShared.find(line)?.let { fc.sharedUser = it.groupValues[1]; return@stream }
-            rFirst.find(line)?.let { if (fc.installTime.isEmpty()) fc.installTime = it.groupValues[1].trim(); return@stream }
-            rInstaller.find(line)?.let { if (fc.installer.isEmpty()) fc.installer = it.groupValues[1]; return@stream }
+            rShared.find(line)?.let { fc.sharedUser = it.groupValues[1]; return@streamLarge }
+            rFirst.find(line)?.let { if (fc.installTime.isEmpty()) fc.installTime = it.groupValues[1].trim(); return@streamLarge }
+            rInstaller.find(line)?.let { if (fc.installer.isEmpty()) fc.installer = it.groupValues[1]; return@streamLarge }
             if (rUser0.containsMatchIn(line)) {
                 if (rDisabled3.containsMatchIn(line)) fc.userDisabled = true // switched off by a user or a tool
                 if (rSuspended.containsMatchIn(line)) fc.userSuspended = true // frozen by this tool
-                return@stream
+                return@streamLarge
             }
             rCode.find(line)?.let { m ->
                 val part = partition(m.groupValues[1])
                 // The active entry comes first; an updated system app keeps its original partition.
                 if (fc.partition.isEmpty() || fc.partition.equals("data", ignoreCase = true)) fc.partition = part
                 if (rPrivApp.containsMatchIn(m.groupValues[1])) fc.privileged = true
-                return@stream
+                return@streamLarge
             }
-            rFlags.find(line)?.let { m -> if (rPersistent.containsMatchIn(m.groupValues[2])) fc.persistent = true; return@stream }
+            rFlags.find(line)?.let { m -> if (rPersistent.containsMatchIn(m.groupValues[2])) fc.persistent = true; return@streamLarge }
             rPrivFlags.find(line)?.let { m -> if (rPrivileged.containsMatchIn(m.groupValues[1])) fc.privileged = true }
         }
         if (androidSig.isNotEmpty()) {
@@ -191,7 +217,7 @@ class Scanner(private val shell: Shell, private val log: Log) {
 
         // 2. Which packages have an app icon (a launcher entry) - i.e. are user-facing apps.
         log.line("Reading app icons...")
-        for (p in packagesFromText(shell.run("cmd package query-activities --user 0 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER"))) {
+        for (p in packagesFromText(out(ICONS))) {
             f(p)?.hasIcon = true
         }
 
@@ -202,10 +228,11 @@ class Scanner(private val shell: Shell, private val log: Log) {
         val rApp = rx("^\\s*app=")
         val rProc = rx("ProcessRecord\\{\\w+\\s+\\d+:([^/\\s}]+)/")
         var svc: String? = null
-        shell.stream("dumpsys activity services") { l ->
-            rSvc.find(l)?.let { svc = it.groupValues[1]; return@stream }
-            val s = svc ?: return@stream
-            if (rApp.containsMatchIn(l)) return@stream
+        for (l in out(SERVICES)) {
+            val ms = rSvc.find(l)
+            if (ms != null) { svc = ms.groupValues[1]; continue }
+            val s = svc ?: continue
+            if (rApp.containsMatchIn(l)) continue
             rProc.find(l)?.let { m ->
                 val client = m.groupValues[1].split(":")[0]
                 val fs = f(s)
@@ -215,9 +242,10 @@ class Scanner(private val shell: Shell, private val log: Log) {
         val rProv = rx("ContentProviderRecord\\{\\w+\\s+u\\d+\\s+([\\w.]+)/")
         val rConn = rx("->\\s*\\d+:([^/\\s]+)/")
         var prov: String? = null
-        shell.stream("dumpsys activity providers") { l ->
-            rProv.find(l)?.let { prov = it.groupValues[1]; return@stream }
-            val pv = prov ?: return@stream
+        for (l in out(PROVIDERS)) {
+            val mp = rProv.find(l)
+            if (mp != null) { prov = mp.groupValues[1]; continue }
+            val pv = prov ?: continue
             rConn.find(l)?.let { m ->
                 val client = m.groupValues[1].split(":")[0]
                 val fp = f(pv)
@@ -229,7 +257,7 @@ class Scanner(private val shell: Shell, private val log: Log) {
         val rTarget = rx("^([\\w.]+)\\s*$")
         val rOverlay = rx("^\\s*(\\[x\\]|\\[ \\]|---)\\s+([\\w.]+)")
         var target: String? = null
-        for (l in shell.run("cmd overlay list --user 0")) {
+        for (l in out(OVERLAYS)) {
             val mt = rTarget.find(l)
             if (mt != null) { target = mt.groupValues[1]; continue }
             val t = target ?: continue
@@ -243,33 +271,25 @@ class Scanner(private val shell: Shell, private val log: Log) {
 
         // 5. Default roles, keyboard, device admins, location providers.
         for (role in listOf("HOME", "DIALER", "SMS")) {
-            for (l in shell.run("cmd role get-role-holders --user 0 android.app.role.$role")) {
+            for (l in out(role(role))) {
                 for (p in l.split(Regex("[;\\s]+"))) f(p)?.let { addUnique(it.roles, "current default ${role.lowercase()} app") }
             }
         }
-        val ime = shell.run("settings get secure default_input_method").joinToString("").trim()
+        for (l in out(role("BROWSER"))) {
+            for (p in l.split(Regex("[;\\s]+"))) f(p)?.defaultBrowser = true
+        }
+        val ime = out(IME).joinToString("").trim()
         rx("^([\\w.]+)/").find(ime)?.let { m -> f(m.groupValues[1])?.let { addUnique(it.roles, "current default keyboard") } }
         val rAdmin = Regex("ComponentInfo\\{([\\w.]+)/")
-        for (l in shell.run("dumpsys device_policy")) {
+        for (l in out(ADMINS)) {
             for (m in rAdmin.findAll(l)) f(m.groupValues[1])?.let { addUnique(it.roles, "device administrator") }
         }
-        val locActions = listOf(
-            "com.android.location.service.v3.NetworkLocationProvider",
-            "com.android.location.service.v2.NetworkLocationProvider",
-            "com.android.location.service.FusedLocationProvider",
-            "com.android.location.service.GeocodeProvider",
-            "com.android.location.service.GeofenceProvider",
-        )
-        for (a in locActions) {
-            for (p in packagesFromText(shell.run("cmd package query-services --user 0 -a $a"))) {
-                f(p)?.let { addUnique(it.roles, "provides location services") }
-            }
-        }
+        for (p in packagesFromText(out(LOCATION))) f(p)?.let { addUnique(it.roles, "provides location services") }
 
         // 6. Running processes (informational).
         log.line("Reading running processes...")
         val running = HashSet<String>()
-        for (l in shell.run("ps -A -o NAME")) {
+        for (l in out(PROCESSES)) {
             val n = l.trim().split(":")[0]
             if (n.isNotEmpty()) running.add(n.lowercase())
         }

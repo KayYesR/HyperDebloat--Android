@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.PrintWriter
@@ -92,7 +93,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _screen = MutableStateFlow<Screen>(Screen.Setup)
     val screen: StateFlow<Screen> = _screen
 
-    private val _setupStep = MutableStateFlow(SetupStep.DEV_OPTIONS)
+    private val _setupStep = MutableStateFlow(SetupStep.NOTIFY)
     val setupStep: StateFlow<SetupStep> = _setupStep
 
     private val _checking = MutableStateFlow(false)
@@ -109,6 +110,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _counts = MutableStateFlow<Map<Tier, Int>?>(null)
     val counts: StateFlow<Map<Tier, Int>?> = _counts
+
+    private val _scanError = MutableStateFlow<String?>(null)
+    /** Set when the last check failed, so the home screen can say so and offer to try again. */
+    val scanError: StateFlow<String?> = _scanError
 
     private val _lastScan = MutableStateFlow("")
     val lastScan: StateFlow<String> = _lastScan
@@ -141,7 +146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val working = AtomicBoolean(false)
     private val connecting = AtomicBoolean(false)
 
-    private val shell = AdbShell(adb, storage) { _saveRaw.value }
+    private val shell = AdbShell(adb, storage, { _saveRaw.value }) { logger.line(it) }
     private val logger = Log { line -> _log.update { (it + line).takeLast(3000) } }
 
     private var engine: Engine? = null
@@ -192,6 +197,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------------------------------
     // Setup and connection
     // ------------------------------------------------------------------------------------------
+    /** Notifications are needed only to type the pairing code into one; Android 12 and older allow them already. */
+    private fun notificationsAllowed(): Boolean =
+        android.os.Build.VERSION.SDK_INT < 33 || androidx.core.content.ContextCompat.checkSelfPermission(
+            getApplication(), android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private val _notifySkipped = MutableStateFlow(false)
+    /** "Not now" on the notification step: carry on; the pairing code can still be typed in the app. */
+    fun skipNotifications() { _notifySkipped.value = true; prefs.edit().putBoolean("notifySkipped", true).apply(); refreshSetup() }
+
     private fun devOptionsOn(): Boolean =
         Settings.Global.getInt(getApplication<Application>().contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
 
@@ -204,6 +218,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Works out which setup step is next, and connects when everything is in place. */
     fun refreshSetup() {
         if (working.get()) return
+        if (!notificationsAllowed() && !adb.everPaired && !prefs.getBoolean("notifySkipped", false)) { _setupStep.value = SetupStep.NOTIFY; return }
         if (!devOptionsOn()) { _setupStep.value = SetupStep.DEV_OPTIONS; return }
         if (!connecting.compareAndSet(false, true)) return
         viewModelScope.launch {
@@ -348,8 +363,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (action == Action.RESCAN || (action != Action.RESTORE && (needScan || rows == null))) {
                     try {
                         rows = scan(dev)
+                        _scanError.value = null
                     } catch (e: Exception) {
-                        notice("Scan stopped", errorReport(e, "Scan"), true)
+                        _scanError.value = e.message ?: e.javaClass.simpleName
+                        errorReport(e, "Scan")
                         return@launch
                     }
                 }
@@ -389,13 +406,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (msg != null) notice("Removed apps came back", msg, true)
         if (changed) sets = io { sc.packageSets() }
-        val facts = io { sc.deviceFacts(sets.all) }
-        step("Downloading the debloat lists")
-        val idx = io { CommunityLists.buildIndex(CommunityLists.load(storage, fetcher, logger)) }
+        // The lists load at the same time as the phone is read.
+        val lists = viewModelScope.async(Dispatchers.IO) { CommunityLists.buildIndex(CommunityLists.load(storage, fetcher, logger)) }
+        val facts = try { io { sc.deviceFacts(sets.all) } } catch (e: Exception) { lists.cancel(); throw e }
+        step("Comparing with the debloat lists")
+        val idx = lists.await()
         val result = Classifier.classify(idx, sets, facts, getApplication<Application>().packageName)
         step("Classification")
-        for (t in listOf(Tier.SAFE, Tier.MODERATE, Tier.HIGH, Tier.UNSAFE, Tier.FLAGGED, Tier.APP)) {
-            logger.line("  ${t.colour.padEnd(7)} ${t.label.padEnd(9)} ${result.count { it.tier == t }} packages")
+        for (t in listOf(Tier.SAFE, Tier.MOSTLY, Tier.MODERATE, Tier.HIGH, Tier.UNSAFE, Tier.FLAGGED, Tier.APP)) {
+            logger.line("  ${t.colour.padEnd(11)} ${t.label.padEnd(9)} ${result.count { it.tier == t }} packages")
         }
         io { eng.saveReport(result, dev) }
         _counts.value = Tier.entries.associateWith { t -> result.count { it.tier == t } }
@@ -418,15 +437,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun appName(pkg: String) = appInfo.label(pkg).ifEmpty { pkg }
 
     private suspend fun recommended(rows: List<Row>) {
-        val green = rows.filter { it.tier == Tier.SAFE || (it.tier == Tier.APP && it.atSetup) }
-        if (green.isEmpty()) {
+        // Safe and mostly-okay packages, setup junk, and the essential Google apps (in their own box, never ticked).
+        val green = rows.filter {
+            it.tier == Tier.SAFE || it.tier == Tier.MOSTLY || (it.tier == Tier.APP && it.atSetup) || it.category == "Essential Google apps"
+        }
+        if (green.none { it.tier == Tier.SAFE || it.tier == Tier.MOSTLY || it.atSetup }) {
             notice("Nothing safe to remove", "Nothing on this phone is rated safe. Use Custom to look at the rest.")
             return
         }
         step("Recommended: ${green.size} packages")
         val picked = pick(PickSpec("Remove junk", green, "Remove selected", true,
             "", false, simple = true,
-            intro = "Junk is already ticked. Untick anything you want to keep, then tap Remove."))
+            intro = "Safe junk is already ticked. Check each section, untick anything you want to keep, then tap Remove."))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
         if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)

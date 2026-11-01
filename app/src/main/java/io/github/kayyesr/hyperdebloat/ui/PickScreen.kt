@@ -48,6 +48,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import io.github.kayyesr.hyperdebloat.core.Classifier
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -96,7 +101,8 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
     var labels by remember(spec) { mutableStateOf(emptyMap<String, String>()) }
     LaunchedEffect(spec) { labels = withContext(Dispatchers.IO) { spec.items.associate { it.pkg to apps.label(it.pkg) } } }
 
-    fun selectable(r: PkgRow) = !r.locked && (spec.allowFlagged || r.tier != Tier.FLAGGED)
+    fun selectable(r: PkgRow) = !r.locked && (spec.allowFlagged || r.tier != Tier.FLAGGED) &&
+        !(spec.simple && (r.tier == Tier.UNSAFE || r.tier == Tier.HIGH))
     fun toggle(r: PkgRow) { if (selectable(r)) { if (ticked[r.pkg] == true) ticked.remove(r.pkg) else ticked[r.pkg] = true } }
 
     val categories = remember(spec) {
@@ -159,6 +165,28 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
 
+            // Sections for the simple list: built once, with the position of each header for the jump chips.
+            val listState = rememberLazyListState()
+            val scope = rememberCoroutineScope()
+            val sections = remember(spec) {
+                if (!(spec.simple && spec.preselectBackground)) emptyList()
+                else spec.items.groupBy { it.category }.toList().sortedBy { (c, _) ->
+                    Classifier.SECTIONS.indexOf(c).let { if (it < 0) 99 else it }
+                }
+            }
+            val headerIndex = remember(sections) {
+                var i = 0
+                sections.associate { (c, rows) -> c to i.also { i += rows.size + 1 } }
+            }
+            if (sections.size > 1) {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(sections, key = { it.first }) { (c, rows) ->
+                        AssistChip(onClick = { scope.launch { listState.animateScrollToItem(headerIndex[c] ?: 0) } },
+                            label = { Text("$c (${rows.size})") })
+                    }
+                }
+            }
+
             // Categories
             if (!spec.simple && categories.size > 1) {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -175,20 +203,12 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     )
                 }
-                LazyColumn {
-                    if (spec.simple && spec.preselectBackground) {
-                        // Split into what was ticked for the user and what they decide themselves.
-                        val auto = visible.filter { it.tier == Tier.SAFE && !it.userApp && !it.locked }
-                        val decide = visible - auto.toSet()
-                        if (auto.isNotEmpty()) {
-                            item(key = "h1") { SectionHeader("Junk, ticked for you", "Ads, tracking and background extras. Nothing else needs them.") }
-                            items(auto, key = { it.pkg }) { r ->
-                                PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), simple = true, onToggle = { toggle(r) }, onInfo = { details = r })
-                            }
-                        }
-                        if (decide.isNotEmpty()) {
-                            item(key = "h2") { SectionHeader("You decide", "Safe to remove, but you may use these. Tick only the ones you don't want.") }
-                            items(decide, key = { it.pkg }) { r ->
+                LazyColumn(state = listState) {
+                    if (sections.isNotEmpty()) {
+                        // One section per kind of app, in a fixed order.
+                        for ((c, rows) in sections) {
+                            item(key = "h_$c") { SectionHeader("$c (${rows.size})", sectionText(c)) }
+                            items(rows, key = { it.pkg }) { r ->
                                 PackageItem(r, labels[r.pkg].orEmpty(), apps, ticked[r.pkg] == true, selectable(r), simple = true, onToggle = { toggle(r) }, onInfo = { details = r })
                             }
                         }
@@ -245,7 +265,8 @@ private fun LegendList(spec: PickSpec) {
         tierStyle(Tier.SAFE).copy(label = "Restore / Re-enable / Unfreeze") to "Comes straight back.",
         tierStyle(Tier.MODERATE).copy(label = "Play Store") to "Was fully uninstalled. Opens its Play Store page.",
     ) else listOf(
-        tierStyle(Tier.SAFE) to "Nothing else depends on it.",
+        tierStyle(Tier.SAFE) to "Nothing else needs it, and all 3 lists agree.",
+        tierStyle(Tier.MOSTLY) to "Nothing else needs it; 2 of the 3 lists agree. Not ticked for you.",
         tierStyle(Tier.MODERATE) to "A small feature may stop working.",
         tierStyle(Tier.HIGH) to "A main feature may stop working.",
         tierStyle(Tier.UNSAFE) to "Can stop the phone working. Avoid.",
@@ -298,10 +319,12 @@ private fun PackageItem(r: PkgRow, label: String, apps: AppLookup, checked: Bool
                 color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
             if (!simple) Text(r.pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                if (!simple || r.action != null) Badge(style)
-                if (r.description.isNotEmpty()) {
-                    if (!simple || r.action != null) Spacer(Modifier.width(6.dp))
-                    Text(r.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Badge(style)
+                val line = r.note.ifEmpty { r.description }
+                if (line.isNotEmpty()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(line, style = MaterialTheme.typography.bodySmall,
+                        color = if (r.note.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -323,6 +346,7 @@ private fun DetailsSheet(r: PkgRow, label: String, apps: AppLookup, checked: Boo
             }
             Badge(badgeFor(r))
         }
+        if (r.note.isNotEmpty()) Field("Advice", r.note)
         if (r.description.isNotEmpty()) Field("What it does", r.description)
         Field("What the phone says", r.phone)
         if (r.lists.isNotEmpty()) Field("What the lists say", r.lists)
@@ -356,4 +380,21 @@ private fun SectionHeader(title: String, text: String) {
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+/** One line under each section header saying what is in it. */
+fun sectionText(c: String): String = when (c) {
+    "Ads & tracking" -> "Xiaomi ads, analytics and telemetry."
+    "Games" -> "Game centres, game boosters and preinstalled games."
+    "Media & music" -> "Music, video and radio players."
+    "Xiaomi apps" -> "Xiaomi's own apps that have an icon."
+    "Other preinstalled apps" -> "Apps from other companies that came with the phone."
+    "Google apps" -> "Google apps that have an icon."
+    "Google services", "Xiaomi & Android services" -> "Background parts with no icon."
+    "Themes & overlays" -> "Extra themes, icon packs and display overlays."
+    "Hardware & drivers" -> "Parts that came with the phone's hardware."
+    "Essential Google apps" -> "Never ticked for you. Read the advice on each one."
+    "Installed during setup" -> "Installed while the phone was set up. Apps restored from your backup arrive then too, so check these."
+    "Your apps" -> "Apps you installed."
+    else -> ""
 }

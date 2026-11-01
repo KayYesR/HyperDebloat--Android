@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,6 +60,8 @@ fun StepCard(
     onClick: () -> Unit = {},
     secondary: String? = null,
     onSecondary: () -> Unit = {},
+    /** Tapping a done or later step does this (for example "check again"); null = not tappable. */
+    onCardClick: (() -> Unit)? = null,
     extra: @Composable () -> Unit = {},
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -74,7 +77,9 @@ fun StepCard(
     Card(
         colors = CardDefaults.cardColors(containerColor = container),
         border = if (state == StepState.CURRENT) BorderStroke(2.dp, primary.copy(alpha = pulse)) else null,
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier.fillMaxWidth().animateContentSize().then(
+            if (state != StepState.CURRENT && onCardClick != null) Modifier.clickable(onClick = onCardClick) else Modifier
+        ),
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

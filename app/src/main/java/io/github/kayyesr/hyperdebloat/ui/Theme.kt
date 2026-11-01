@@ -74,6 +74,7 @@ data class TierStyle(val label: String, val colour: Color)
 
 fun tierStyle(tier: Tier): TierStyle = when (tier) {
     Tier.SAFE -> TierStyle("Safe", Color(0xFF2E9E5B))
+    Tier.MOSTLY -> TierStyle("Mostly okay", Color(0xFF6AAE3A))
     Tier.MODERATE -> TierStyle("Minor risk", Color(0xFFC9A100))
     Tier.HIGH -> TierStyle("Risky", Color(0xFFE07A10))
     Tier.UNSAFE -> TierStyle("Unsafe", Color(0xFFD63B3B))

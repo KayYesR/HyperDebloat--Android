@@ -18,6 +18,27 @@ object Classifier {
         "com.google.android.gm",           // Gmail
     )
 
+    /** How the essential Google apps are handled: lowest rating allowed, and the advice shown with them. */
+    class Essential(val minTier: Int, val note: String)
+
+    val ESSENTIAL_GOOGLE = mapOf(
+        "com.android.vending" to Essential(4, "Keep. Needed to install and update apps."),
+        "com.google.android.gms" to Essential(4, "Keep. Most apps need Google Play services to work."),
+        "com.google.android.googlequicksearchbox" to Essential(3, "Keep. Google search, Assistant and the Discover feed need it."),
+        "com.android.chrome" to Essential(1, ""), // advice depends on the default browser, see essentialNote
+        "com.google.android.gm" to Essential(1, "Remove only if you don't use Gmail."),
+        "com.google.android.youtube" to Essential(1, "Remove only if you don't use YouTube."),
+        "com.google.android.apps.tachyon" to Essential(1, "Remove only if you don't use Google Meet."),
+        "com.google.android.apps.maps" to Essential(1, "Remove only if you don't use Google Maps."),
+    )
+
+    /** Sections in the order they are listed. */
+    val SECTIONS = listOf(
+        "Ads & tracking", "Games", "Media & music", "Xiaomi apps", "Other preinstalled apps", "Google apps",
+        "Google services", "Xiaomi & Android services", "Themes & overlays", "Hardware & drivers",
+        "Essential Google apps", "Installed during setup", "Your apps",
+    )
+
     /**
      * Android version only: packages HyperDebloat needs while it runs on the phone. Removing one of these
      * mid-run would cut the wireless debugging connection or the pairing screen, so they can never be ticked.
@@ -102,23 +123,28 @@ object Classifier {
     }
 
     private val rAds = Regex("^(com\\.miui\\.(msa|analytics|daemon|bugreport|hybrid|systemAdSolution|contentcatcher)|com\\.miui\\.android\\.fashiongallery|com\\.mfashiongallery|com\\.glance|com\\.facebook\\.(appmanager|services|system))(\\.|$)", I)
-    private val rAdsDesc = Regex("telemetry|ad-serving|advertis|collects usage data", I)
+    private val rAdsDesc = Regex("telemetry|ad-serving|advertis|\\bads?\\b|analytics|collects usage data|tracking", I)
+    private val rGame = Regex("(^|\\.)(game|games|gamecenter|gamebooster|gametools|gamespace)(\\.|$)|game", I)
+    private val rGameDesc = Regex("\\bgames?\\b|gaming", I)
+    private val rMedia = Regex("music|player|mivideo|\\.video(\\.|$)|videoplayer|fmradio|\\.radio(\\.|$)|podcast", I)
+    private val rMediaDesc = Regex("music|video player|media player|\\bradio\\b|podcast", I)
     private val rXiaomiOrAndroid = Regex("^(android|com\\.android|com\\.google|com\\.miui|com\\.xiaomi|com\\.mi|com\\.mipay|miui|com\\.lbe|com\\.fido|com\\.milink|com\\.duokan|org\\.chromium|org\\.ifaa|cn\\.wps|com\\.unionpay|com\\.gallery|com\\.qualcomm|com\\.qti|org\\.codeaurora|vendor|com\\.mediatek|com\\.mtk|com\\.fingerprints|com\\.goodix|com\\.huaqin|com\\.tencent\\.soter|com\\.debug|com\\.wapi|com\\.wdstechnology|com\\.example)(\\.|$)", I)
     private val rTheme = Regex("(^|\\.)(overlay|theme|icon_pack|navbar|cutout)(\\.|$)|overlay$", I)
     private val rHardware = Regex("^(com\\.qualcomm|com\\.qti|org\\.codeaurora|vendor|com\\.mediatek|com\\.mtk|com\\.fingerprints|com\\.goodix|com\\.huaqin|com\\.tencent\\.soter|com\\.debug|com\\.wapi)(\\.|$)", I)
     private val rGoogle = Regex("^com\\.google\\.|^com\\.android\\.(vending|chrome)$", I)
-    private val rAndroid = Regex("^(android|com\\.android)(\\.|$)", I)
 
-    /** A plain label for what kind of package this is. It helps people find things; it does not change the rating. */
+    /** Which section a package is listed in. It helps people find things; it does not change the rating. */
     fun category(pkg: String, desc: String, icon: Boolean, partition: String): String {
+        if (ESSENTIAL_GOOGLE.containsKey(pkg.lowercase())) return "Essential Google apps"
         if (rAds.containsMatchIn(pkg) || rAdsDesc.containsMatchIn(desc)) return "Ads & tracking"
-        if (!rXiaomiOrAndroid.containsMatchIn(pkg)) return "Third-party preloads"
-        if (rTheme.containsMatchIn(pkg)) return "Themes & overlays"
         if (isHardwarePartition(partition) || rHardware.containsMatchIn(pkg)) return "Hardware & drivers"
+        if (rTheme.containsMatchIn(pkg)) return "Themes & overlays"
+        if (rGame.containsMatchIn(pkg) || rGameDesc.containsMatchIn(desc)) return "Games"
+        if (rMedia.containsMatchIn(pkg) || rMediaDesc.containsMatchIn(desc)) return "Media & music"
+        if (!rXiaomiOrAndroid.containsMatchIn(pkg)) return "Other preinstalled apps"
         if (rGoogle.containsMatchIn(pkg)) return if (icon) "Google apps" else "Google services"
-        if (icon) return "Xiaomi & phone apps"
-        if (rAndroid.containsMatchIn(pkg)) return "Android system"
-        return "Xiaomi services"
+        if (icon) return "Xiaomi apps"
+        return "Xiaomi & Android services"
     }
 
     private fun sources(pkg: String, idx: ListIndex): LinkedHashMap<String, ListEntry> {
@@ -190,17 +216,46 @@ object Classifier {
             notes.add("raised to YELLOW: lists unavailable, so it cannot be confirmed as junk")
         }
 
+        // Essential Google apps: never lower than their minimum, with plain advice.
+        val ess = ESSENTIAL_GOOGLE[pkg.lowercase()]
+        var note = ""
+        if (ess != null) {
+            var min = ess.minTier
+            note = ess.note
+            if (pkg.equals("com.android.chrome", true)) {
+                if (f.defaultBrowser) {
+                    min = 2
+                    note = "Chrome is your default browser. Set another browser as default first."
+                } else note = "You use another browser as default, so Chrome can be removed."
+            }
+            if (tier == 0 || tier < min) {
+                tier = min
+                notes.add("essential Google app: kept at ${Tier.of(tier).colour} or higher")
+            }
+        }
+
+        // Green is split by how sure it is: Safe needs the phone and all three lists; otherwise Mostly okay.
+        var final = Tier.of(tier)
+        if (tier == 1) {
+            val allThree = src.size >= 3 && src.values.all { it.tier == 1 }
+            if (!(allThree && pv.tier == 1)) {
+                final = Tier.MOSTLY
+                notes.add("MOSTLY OK: " + if (pv.tier != 1) "the lists agree, but something small uses it" else "${src.size} of 3 lists agree")
+            }
+        }
+
         return Row(
-            tier = Tier.of(tier),
-            risk = Tier.of(tier).label,
+            tier = final,
+            risk = final.label,
             pkg = pkg,
             description = desc,
             phone = "${Tier.of(pv.tier).colour}: ${pv.why}",
             lists = lists,
             reason = notes.joinToString("; "),
             facts = f,
-            userApp = pv.hasIcon || KEEP_UNTICKED.contains(pkg.lowercase()),
+            userApp = pv.hasIcon || KEEP_UNTICKED.contains(pkg.lowercase()) || ess != null,
             category = category(pkg, desc, pv.hasIcon, f.partition),
+            note = note,
         )
     }
 
@@ -272,6 +327,6 @@ object Classifier {
 
     /** "12 green, 30 yellow, ..." for the home screen. */
     fun summary(rows: List<Row>): String =
-        listOf(Tier.SAFE, Tier.MODERATE, Tier.HIGH, Tier.UNSAFE, Tier.FLAGGED, Tier.APP)
+        listOf(Tier.SAFE, Tier.MOSTLY, Tier.MODERATE, Tier.HIGH, Tier.UNSAFE, Tier.FLAGGED, Tier.APP)
             .joinToString(", ") { t -> "${rows.count { it.tier == t }} ${t.colour.lowercase()}" }
 }

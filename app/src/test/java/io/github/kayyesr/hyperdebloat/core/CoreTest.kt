@@ -181,6 +181,45 @@ Queries:
         assertEquals(Tier.APP, rows.last().tier)
     }
 
+    @Test fun mostlyOkayAndEssentialGoogle() {
+        val facts = HashMap<String, PackageFacts>()
+        for (p in listOf("com.miui.analytics", "com.android.chrome", "com.google.android.gm", "com.android.vending"))
+            facts[p] = PackageFacts().apply { seen = true; partition = "system" }
+        val idx = ListIndex()
+        for (p in facts.keys) {
+            idx.uad[p] = ListEntry(1, "Recommended", "")
+            idx.fadeltd[p] = ListEntry(1, "safe", "")
+        }
+        // Phone sees nothing using it, but only 2 of the 3 lists know it: Mostly okay, not Safe.
+        assertEquals(Tier.MOSTLY, Classifier.rating("com.miui.analytics", true, idx, facts)!!.tier)
+        idx.ovsky["com.miui.analytics"] = ListEntry(1, "phase1_safe", "")
+        assertEquals(Tier.SAFE, Classifier.rating("com.miui.analytics", true, idx, facts)!!.tier)
+
+        // Chrome as the default browser: kept at least yellow, with advice.
+        facts["com.android.chrome"]!!.defaultBrowser = true
+        val chrome = Classifier.rating("com.android.chrome", true, idx, facts)!!
+        assertEquals(Tier.MODERATE, chrome.tier)
+        assertTrue(chrome.note.contains("default browser"))
+        assertEquals("Essential Google apps", chrome.category)
+        // Another browser is default: Chrome may be removed.
+        facts["com.android.chrome"]!!.defaultBrowser = false
+        assertTrue(Classifier.rating("com.android.chrome", true, idx, facts)!!.note.contains("can be removed"))
+
+        // Gmail: never ticked (userApp), advice to keep if used. Play Store: always unsafe.
+        val gmail = Classifier.rating("com.google.android.gm", true, idx, facts)!!
+        assertTrue(gmail.userApp)
+        assertTrue(gmail.note.contains("don't use Gmail"))
+        assertEquals(Tier.UNSAFE, Classifier.rating("com.android.vending", true, idx, facts)!!.tier)
+    }
+
+    @Test fun categories() {
+        assertEquals("Games", Classifier.category("com.xiaomi.glgm", "Xiaomi games centre", true, "product"))
+        assertEquals("Media & music", Classifier.category("com.miui.player", "Music player", true, "product"))
+        assertEquals("Ads & tracking", Classifier.category("com.miui.msa.global", "", false, "system"))
+        assertEquals("Other preinstalled apps", Classifier.category("com.netflix.mediaclient", "", true, "product"))
+        assertEquals("Essential Google apps", Classifier.category("com.google.android.youtube", "", true, "product"))
+    }
+
     @Test fun unknownToListsIsFlagged() {
         val sh = shell()
         val sc = Scanner(sh) {}
