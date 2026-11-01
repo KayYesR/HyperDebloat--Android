@@ -80,6 +80,8 @@ class AdbShell(
     private val storage: AndroidStorage,
     private val saveRaw: () -> Boolean,
     private val progress: (String) -> Unit = {},
+    /** How far a large read has got, 0..1. */
+    private val fraction: (Float) -> Unit = {},
 ) : Shell {
     override fun stream(command: String, onLine: (String) -> Unit) {
         if (!saveRaw()) { adb.shell(command, onLine); return }
@@ -112,6 +114,7 @@ class AdbShell(
                 val end = minOf(start + chunk - 1, lines)
                 stream("sed -n '$start,${end}p' $tmp") { read += it.length + 1; onLine(it) }
                 progress("  Read ${"%.1f".format(read / 1048576.0)} of ${"%.1f".format(bytes / 1048576.0)} MB")
+                if (bytes > 0) fraction((read.toDouble() / bytes).toFloat())
                 start = end + 1
             }
             adb.debug("Read \"$command\" in ${(System.currentTimeMillis() - t0) / 1000.0} s")

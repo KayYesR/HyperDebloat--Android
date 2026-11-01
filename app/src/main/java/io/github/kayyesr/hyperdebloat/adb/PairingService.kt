@@ -144,7 +144,7 @@ class PairingService : Service() {
 
     private fun notification(title: String, text: String?, withReply: Boolean, openApp: Boolean = false): Notification {
         val b = NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_broom)
             .setContentTitle(title)
             .setOngoing(!openApp)
             .setOnlyAlertOnce(false)

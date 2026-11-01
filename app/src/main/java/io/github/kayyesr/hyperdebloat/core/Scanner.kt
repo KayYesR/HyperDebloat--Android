@@ -7,14 +7,21 @@ class Scanner(private val shell: Shell, private val log: Log) {
     private fun rx(p: String) = Regex(p, I)
 
     fun deviceInfo(): DeviceInfo {
-        // One command for all properties: lines look like "[ro.product.model]: [25098PN5AI]".
+        // Only the properties needed, one short command: "name=value" per line.
+        val names = listOf("ro.product.model", "ro.mi.os.version.incremental", "ro.build.version.incremental",
+            "ro.product.marketname", "ro.product.manufacturer", "ro.product.brand", "ro.product.device",
+            "ro.mi.os.version.name", "ro.build.version.release", "ro.build.version.sdk")
         val props = HashMap<String, String>()
-        val rProp = Regex("^\\[([^\\]]+)\\]: \\[(.*)\\]$")
-        for (l in shell.run("getprop")) rProp.find(l.trim())?.let { props[it.groupValues[1]] = it.groupValues[2] }
+        for (l in shell.run(names.joinToString("; ") { "echo \"$it=$(getprop $it)\"" })) {
+            val i = l.indexOf('=')
+            if (i > 0) props[l.substring(0, i).trim()] = l.substring(i + 1)
+        }
         fun p(name: String) = props[name].orEmpty().trim()
         val model = p("ro.product.model")
         var build = p("ro.mi.os.version.incremental")
         if (build.isEmpty()) build = p("ro.build.version.incremental")
+        // A blank model means the answer did not arrive; never carry on with a nameless phone.
+        if (model.isEmpty() && p("ro.product.manufacturer").isEmpty()) throw java.io.IOException("Could not read the phone's details")
         val market = p("ro.product.marketname").ifEmpty { model }
         return DeviceInfo(
             manufacturer = p("ro.product.manufacturer"),

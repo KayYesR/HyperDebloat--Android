@@ -12,11 +12,9 @@ import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
-import java.io.BufferedReader
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
-import java.io.InputStreamReader
 import java.math.BigInteger
 import java.net.InetAddress
 import java.security.KeyFactory
@@ -263,7 +261,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         if (!isConnected && !tryConnect()) return "Not connected."
         try {
             val s = openGuarded("tcpip:$LOCAL_PORT")
-            try { readLines(s) { } } catch (_: Exception) { }
+            drainBriefly(s)
         } catch (e: Exception) {
             return "The phone refused: ${e.message ?: e.javaClass.simpleName}"
         }
@@ -286,7 +284,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         if (connectedLocally && isConnected) {
             try {
                 val s = openGuarded("usb:")
-                try { readLines(s) { } } catch (_: Exception) { }
+                drainBriefly(s)
             } catch (_: Exception) { }
             lost()
         }
@@ -366,16 +364,27 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         }
     }
 
-    /** Runs a shell command and streams its output lines. Reconnects once if the connection dropped. */
+    private val random = java.security.SecureRandom()
+
+    /**
+     * Runs a shell command and streams its output lines. Reconnects once if the connection dropped.
+     *
+     * Every command ends by printing a unique end line. Reading stops at that line, so the app never depends on the
+     * library noticing the end of a stream: the library waits forever when the phone's "done" arrives while output is
+     * still queued, which is why long outputs used to stall at their very end. No end line means the answer was cut
+     * short, which is an error, never a quiet half result.
+     */
     fun shell(command: String, onLine: (String) -> Unit) {
         var lastError: Exception? = null
         var delivered = 0L
         for (attempt in 0..1) {
             if (!isConnected && !tryConnect()) throw IOException(_lastError.value.ifEmpty { "Not connected to wireless debugging" })
+            val marker = "__HD_END_" + java.lang.Long.toHexString(random.nextLong() and Long.MAX_VALUE) + "__"
             var stream: AdbStream? = null
             try {
-                stream = openGuarded("shell:$command")
-                readLinesWatched(stream, onLine = { delivered++; onLine(it) })
+                // A new line, not ";", so a command that already ends in ";" or "&" still works.
+                stream = openGuarded("shell:$command\necho $marker")
+                readUntilMarker(stream, marker) { delivered++; onLine(it) }
                 return
             } catch (e: Exception) {
                 lastError = e
@@ -387,11 +396,14 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
                 try { stream?.close() } catch (_: Exception) { }
             }
         }
-        throw IOException("Command failed: $command (${lastError?.message})", lastError)
+        throw IOException("Command failed: ${command.take(80)} (${lastError?.message})", lastError)
     }
 
-    /** Like readLines, but gives up if the phone sends nothing for [idleSec] seconds, so a stuck command cannot freeze the app. */
-    private fun readLinesWatched(stream: AdbStream, onLine: (String) -> Unit, idleSec: Long = 30) {
+    /**
+     * Reads lines until the end line [marker]. Gives up if the phone sends nothing for [idleSec] seconds.
+     * Bytes are split into lines here (not with a BufferedReader), so a read never waits for more than the phone sent.
+     */
+    private fun readUntilMarker(stream: AdbStream, marker: String, idleSec: Long = 30, onLine: (String) -> Unit) {
         val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
         val done = java.util.concurrent.atomic.AtomicBoolean(false)
         val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -405,13 +417,45 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
                 }
             }
         }.apply { isDaemon = true; start() }
+        val input = stream.openInputStream()
+        val buf = ByteArray(64 * 1024)
+        val lines = io.github.kayyesr.hyperdebloat.core.MarkerLines(marker)
         try {
-            readLines(stream) { last.set(System.currentTimeMillis()); onLine(it) }
+            while (true) {
+                val n = try {
+                    input.read(buf)
+                } catch (e: IOException) {
+                    if (timedOut.get()) throw IOException("The phone stopped answering")
+                    throw IOException("The answer was cut short (${e.message})")
+                }
+                if (n < 0) {
+                    if (timedOut.get()) throw IOException("The phone stopped answering")
+                    throw IOException("The answer was cut short")
+                }
+                if (n == 0) continue
+                last.set(System.currentTimeMillis())
+                if (lines.feed(buf, n, onLine)) return
+            }
         } finally {
             done.set(true)
             watchdog.interrupt()
         }
-        if (timedOut.get()) throw IOException("The phone stopped answering")
+    }
+
+    /**
+     * Reads what a non-shell service (tcpip, usb, reboot) answers, for at most [maxMs]. These end by closing, which the
+     * library can miss, so the wait is capped; their answer is not needed.
+     */
+    private fun drainBriefly(stream: AdbStream, maxMs: Long = 4000) {
+        val t = Thread {
+            try {
+                val input = stream.openInputStream()
+                val b = ByteArray(4096)
+                while (input.read(b) >= 0) { }
+            } catch (_: Exception) { }
+        }.apply { isDaemon = true; start() }
+        t.join(maxMs)
+        try { stream.close() } catch (_: Exception) { }
     }
 
     /**
@@ -445,23 +489,11 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         }
     }
 
-    private fun readLines(stream: AdbStream, onLine: (String) -> Unit) {
-        val reader = BufferedReader(InputStreamReader(stream.openInputStream(), Charsets.UTF_8))
-        while (true) {
-            val line = try {
-                reader.readLine()
-            } catch (e: IOException) {
-                if (stream.isClosed) null else throw e
-            } ?: break
-            onLine(line.trimEnd('\r'))
-        }
-    }
-
     /** Restarts the phone (adb reboot). The connection ends with it. */
     fun reboot() {
         try {
             val s = openGuarded("reboot:")
-            try { readLines(s) { } } catch (_: Exception) { }
+            drainBriefly(s)
         } catch (_: Exception) {
             try { shell("svc power reboot") { } } catch (_: Exception) { }
         }

@@ -1,5 +1,7 @@
 package io.github.kayyesr.hyperdebloat.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
@@ -24,16 +27,39 @@ import androidx.compose.ui.window.DialogProperties
 fun App(vm: MainViewModel) {
     AppTheme {
         val screen by vm.screen.collectAsState()
-        when (val s = screen) {
-            Screen.Setup -> SetupScreen(vm)
-            Screen.Home -> HomeScreen(vm)
-            is Screen.Busy -> BusyScreen(vm, s.title)
-            is Screen.Pick -> PickScreen(vm, s.spec)
-            Screen.Reports -> ReportsScreen(vm)
+        val progress by vm.progress.collectAsState()
+        val checking by vm.checking.collectAsState()
+        val firstCheck by vm.firstCheck.collectAsState()
+        val step by vm.setupStep.collectAsState()
+        Box(Modifier.fillMaxSize()) {
+            when (val s = screen) {
+                Screen.Setup -> SetupScreen(vm)
+                Screen.Home -> HomeScreen(vm)
+                is Screen.Busy -> BusyScreen(vm, s.title)
+                is Screen.Pick -> PickScreen(vm, s.spec)
+                Screen.Reports -> ReportsScreen(vm)
+            }
+            ProgressStrip(barFor(screen, progress, checking, firstCheck, step), Modifier.align(Alignment.BottomCenter))
         }
         val dialog by vm.dialog.collectAsState()
         dialog?.let { MessageDialog(it, vm::answer) }
     }
+}
+
+/** What the bottom bar shows: real progress when an action runs, otherwise what the setup screen is waiting for. */
+fun barFor(screen: Screen, progress: Progress?, checking: Boolean, firstCheck: Boolean, step: SetupStep): Progress? = when {
+    progress != null -> progress
+    screen == Screen.Setup && firstCheck -> Progress("Reconnecting")
+    screen == Screen.Setup && checking -> Progress("Looking for Wireless debugging")
+    screen == Screen.Setup -> Progress(when (step) {
+        SetupStep.NOTIFY -> "Waiting for you to allow notifications"
+        SetupStep.DEV_OPTIONS -> "Waiting for Developer options"
+        SetupStep.WIFI -> "Waiting for Wi-Fi"
+        SetupStep.WIRELESS_DEBUGGING -> "Waiting for Wireless debugging"
+        SetupStep.PAIR -> "Waiting for pairing"
+    })
+    screen == Screen.Home && checking -> Progress("Checking the connection")
+    else -> null
 }
 
 /** A question (Yes/No) or a notice (OK). It must be answered; tapping outside does nothing. */

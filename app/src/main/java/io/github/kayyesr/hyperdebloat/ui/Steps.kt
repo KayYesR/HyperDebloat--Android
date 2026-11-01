@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,6 +33,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -148,5 +150,68 @@ fun PulsingButton(text: String, onClick: () -> Unit) {
     } else 1f
     Button(onClick = onClick, modifier = Modifier.fillMaxWidth().height(56.dp).graphicsLayer { scaleX = scale; scaleY = scale }) {
         Text(text, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/** Room left at the end of scrolling screens, so the progress bar never covers the last item. */
+val BottomBarSpace = 72.dp
+
+/**
+ * The bar at the bottom of every screen while something is happening: what it is doing and, when known, how far along.
+ * A moving bar means the app is working, never stuck.
+ */
+@androidx.compose.runtime.Composable
+fun ProgressStrip(progress: Progress?, modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = progress != null,
+        enter = androidx.compose.animation.slideInVertically { it } + androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutVertically { it } + androidx.compose.animation.fadeOut(),
+        modifier = modifier,
+    ) {
+        // Keeps the last text while sliding away.
+        var shown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(progress) }
+        if (progress != null) shown = progress
+        val p = shown ?: return@AnimatedVisibility
+        androidx.compose.material3.Surface(
+            color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+            modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+        ) {
+            androidx.compose.foundation.layout.Column(
+                androidx.compose.ui.Modifier.navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
+                androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.Text(
+                        p.label, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = androidx.compose.ui.Modifier.weight(1f),
+                    )
+                    p.fraction?.let {
+                        androidx.compose.material3.Text(
+                            "${(it * 100).toInt()}%", style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(8.dp))
+                val bar = androidx.compose.ui.Modifier.fillMaxWidth().height(6.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                if (p.fraction != null) {
+                    val anim by androidx.compose.animation.core.animateFloatAsState(p.fraction, label = "progress")
+                    val animate = LocalAnimate.current
+                    val target = p.fraction
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { if (animate) anim else target }, modifier = bar,
+                        drawStopIndicator = {}, gapSize = 0.dp,
+                    )
+                } else if (LocalAnimate.current) {
+                    androidx.compose.material3.LinearProgressIndicator(modifier = bar, gapSize = 0.dp)
+                } else {
+                    // Screenshot tests: a still bar.
+                    androidx.compose.material3.LinearProgressIndicator(progress = { 0.35f }, modifier = bar, drawStopIndicator = {}, gapSize = 0.dp)
+                }
+            }
+        }
     }
 }

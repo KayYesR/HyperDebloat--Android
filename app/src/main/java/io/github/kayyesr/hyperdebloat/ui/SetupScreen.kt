@@ -61,6 +61,7 @@ fun SetupScreen(vm: MainViewModel) {
     val pairing by PairingService.status.collectAsState()
     val status by vm.adb.lastError.collectAsState()
     val details by vm.adb.debug.collectAsState()
+    val firstCheck by vm.firstCheck.collectAsState()
 
     // Re-check every few seconds while this screen is open, so steps tick off by themselves.
     LaunchedEffect(Unit) {
@@ -96,6 +97,8 @@ fun SetupScreen(vm: MainViewModel) {
         status = status,
         details = details,
         onPort = vm::connectPort,
+        paired = vm.everPaired,
+        reconnecting = firstCheck && vm.everPaired,
     )
 }
 
@@ -115,13 +118,21 @@ fun SetupContent(
     onPort: (Int) -> Unit = {},
     onAllowNotifications: () -> Unit = {},
     onSkipNotifications: () -> Unit = {},
+    /** Paired before: steps done once stay ticked, and the screen says "reconnect" instead of "setup". */
+    paired: Boolean = false,
+    /** Opening the app after it was paired: just reconnect quietly; the checklist shows only if that fails. */
+    reconnecting: Boolean = false,
 ) {
     var showDetails by remember { mutableStateOf(false) }
     fun state(s: SetupStep) = when {
-        s.ordinal < step.ordinal -> StepState.DONE
         s == step -> StepState.CURRENT
+        s.ordinal < step.ordinal -> StepState.DONE
+        // Pairing is kept by the phone, so it stays ticked while Wi-Fi or Wireless debugging is switched back on.
+        s == SetupStep.PAIR && paired -> StepState.DONE
+        s == SetupStep.NOTIFY && paired -> StepState.DONE
         else -> StepState.LATER
     }
+    if (reconnecting) { ReconnectingContent(); return }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -131,8 +142,9 @@ fun SetupContent(
             Text("Removes junk apps from Xiaomi, Redmi and POCO phones.", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(20.dp))
-            Text("First, a one-time setup", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            Text("Follow the highlighted step. Each one ticks itself off.", style = MaterialTheme.typography.bodyMedium,
+            Text(if (paired) "Reconnect" else "First, a one-time setup", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(if (paired) "Wireless debugging turns off when Wi-Fi changes or the phone restarts. Do the highlighted step."
+                else "Follow the highlighted step. Each one ticks itself off.", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(16.dp))
 
@@ -157,15 +169,10 @@ fun SetupContent(
             }
 
             Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                if (checking) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(if (checking) "Checking..." else status.ifEmpty { "Waiting for you" }, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (status.isNotEmpty() && !checking) {
+                Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             }
-            if (!checking && status.isNotEmpty()) Spacer(Modifier.height(2.dp))
             TextButton(onClick = { showDetails = !showDetails }, modifier = Modifier.fillMaxWidth()) {
                 Text(if (showDetails) "Hide details" else "Stuck? Show details")
             }
@@ -181,6 +188,22 @@ fun SetupContent(
                     }
                 }
             }
+            Spacer(Modifier.height(BottomBarSpace))
+        }
+    }
+}
+
+/** Shown for a moment when the app opens after it was paired: no checklist, just the reconnect. */
+@Composable
+fun ReconnectingContent() {
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center) {
+            CircularProgressIndicator(Modifier.size(48.dp), strokeWidth = 4.dp)
+            Spacer(Modifier.height(20.dp))
+            Text("Reconnecting to your phone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("This takes a few seconds.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

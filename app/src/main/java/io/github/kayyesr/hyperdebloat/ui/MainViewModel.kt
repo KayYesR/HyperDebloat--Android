@@ -17,6 +17,7 @@ import io.github.kayyesr.hyperdebloat.core.Engine
 import io.github.kayyesr.hyperdebloat.core.Log
 import io.github.kayyesr.hyperdebloat.core.RestoreAction
 import io.github.kayyesr.hyperdebloat.core.Row
+import io.github.kayyesr.hyperdebloat.core.ScanCache
 import io.github.kayyesr.hyperdebloat.core.Scanner
 import io.github.kayyesr.hyperdebloat.core.Tier
 import io.github.kayyesr.hyperdebloat.data.AdbShell
@@ -30,6 +31,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -64,6 +67,9 @@ class PickSpec(
 ) {
     internal val result = CompletableDeferred<List<Row>>()
 }
+
+/** The bar at the bottom of the screen: what is happening, and how far along (null = no known end). */
+data class Progress(val label: String, val fraction: Float? = null)
 
 /** A question (Yes/No) or a notice (OK). */
 class DialogSpec(
@@ -145,13 +151,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val working = AtomicBoolean(false)
     private val connecting = AtomicBoolean(false)
+    /** Only one flow talks to the phone at a time: a background reconnect never runs inside a check, and the other way round. */
+    private val phoneLock = Mutex()
 
-    private val shell = AdbShell(adb, storage, { _saveRaw.value }) { logger.line(it) }
+    private val _progress = MutableStateFlow<Progress?>(null)
+    val progress: StateFlow<Progress?> = _progress
+    /** Part of the bar the current stage fills, so pieces of work (reading a big answer) move it inside their stage. */
+    @Volatile private var stageFrom = 0f
+    @Volatile private var stageTo = 1f
+
+    private fun progress(label: String, from: Float? = null, to: Float = from ?: 1f) {
+        stageFrom = from ?: 0f
+        stageTo = to
+        _progress.value = Progress(label, from)
+    }
+
+    /** [f] runs 0..1 inside the current stage. */
+    private fun subProgress(f: Float) {
+        val v = stageFrom + (stageTo - stageFrom) * f.coerceIn(0f, 1f)
+        _progress.update { it?.copy(fraction = v) }
+    }
+
+    /** True until the first connection attempt after opening the app has finished. */
+    private val _firstCheck = MutableStateFlow(true)
+    val firstCheck: StateFlow<Boolean> = _firstCheck
+    val everPaired: Boolean get() = adb.everPaired
+
+    private val shell = AdbShell(adb, storage, { _saveRaw.value }, { logger.line(it) }, { subProgress(it) })
     private val logger = Log { line -> _log.update { (it + line).takeLast(3000) } }
 
     private var engine: Engine? = null
     private var rows: List<Row>? = null
     private var needScan = true
+        set(v) {
+            field = v
+            // Results saved from before a removal or restore are out of date.
+            if (v) try { ScanCache.clear(storage) } catch (_: Exception) { }
+        }
     private var deviceKey = ""
 
     init {
@@ -179,13 +215,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun pick(spec: PickSpec): List<Row> {
         val back = _screen.value
+        val bar = _progress.value
+        _progress.value = null
         _screen.value = Screen.Pick(spec)
-        return spec.result.await().also { _screen.value = back }
+        return spec.result.await().also { _screen.value = back; _progress.value = bar }
     }
 
     fun finishPick(spec: PickSpec, picked: List<Row>) { spec.result.complete(picked) }
 
-    private fun busy(title: String) { _screen.value = Screen.Busy(title) }
+    private fun busy(title: String, from: Float? = null, to: Float = from ?: 1f) {
+        _screen.value = Screen.Busy(title)
+        progress(title, from, to)
+    }
     private fun step(text: String) { logger.line(""); logger.line("== $text") }
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
@@ -217,11 +258,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Works out which setup step is next, and connects when everything is in place. */
     fun refreshSetup() {
-        if (working.get()) return
-        if (!notificationsAllowed() && !adb.everPaired && !prefs.getBoolean("notifySkipped", false)) { _setupStep.value = SetupStep.NOTIFY; return }
-        if (!devOptionsOn()) { _setupStep.value = SetupStep.DEV_OPTIONS; return }
+        if (working.get() || phoneLock.isLocked) return
+        if (!notificationsAllowed() && !adb.everPaired && !prefs.getBoolean("notifySkipped", false)) {
+            _setupStep.value = SetupStep.NOTIFY; _firstCheck.value = false; return
+        }
+        if (!devOptionsOn()) { _setupStep.value = SetupStep.DEV_OPTIONS; _firstCheck.value = false; goSetupIfHome(); return }
         if (!connecting.compareAndSet(false, true)) return
         viewModelScope.launch {
+            // An action already holds the phone: it reconnects by itself if needed.
+            if (!phoneLock.tryLock()) { connecting.set(false); return@launch }
             _checking.value = true
             try {
                 val wifi = wifiConnected()
@@ -242,14 +287,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         adb.state.value == AdbManager.State.NOT_PAIRED -> SetupStep.PAIR
                         else -> SetupStep.WIRELESS_DEBUGGING
                     }
-                    if (_screen.value == Screen.Home) _screen.value = Screen.Setup
+                    goSetupIfHome()
                 }
             } finally {
                 _checking.value = false
+                _firstCheck.value = false
                 connecting.set(false)
+                phoneLock.unlock()
+                // A quiet "work without Wi-Fi" switch-on waits until the lock is free.
+                if (pendingNoWifi) { pendingNoWifi = false; setNoWifi(true, quiet = true) }
             }
         }
     }
+
+    private fun goSetupIfHome() { if (_screen.value == Screen.Home) _screen.value = Screen.Setup }
+    @Volatile private var pendingNoWifi = false
 
     fun startPairing() = PairingService.start(getApplication())
 
@@ -258,6 +310,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!connecting.compareAndSet(false, true)) return
         viewModelScope.launch {
             _checking.value = true
+            phoneLock.lock()
             try {
                 when (io { adb.connectPort(port) }) {
                     AdbManager.ConnectResult.OK -> onConnected()
@@ -271,6 +324,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _checking.value = false
                 connecting.set(false)
+                phoneLock.unlock()
             }
         }
     }
@@ -283,8 +337,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 notice("Pairing screen not found", "Keep Pair device with pairing code open in Settings, then try again.", true)
                 return@launch
             }
-            val err = io { adb.pairAndConnect(port, code) }
-            if (err != null) notice("Pairing failed", err, true) else { PairingService.stop(getApplication()); onConnected() }
+            progress("Pairing")
+            try {
+                phoneLock.withLock {
+                    val err = io { adb.pairAndConnect(port, code) }
+                    if (err != null) notice("Pairing failed", err, true) else { PairingService.stop(getApplication()); onConnected() }
+                }
+            } finally {
+                _progress.value = null
+            }
         }
     }
 
@@ -293,8 +354,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updateGuide()
         _screen.value = Screen.Home
         _noWifi.value = adb.noWifiMode
-        // Turned on before, but the phone restarted since: switch it back on.
-        if (adb.noWifiMode && !adb.connectedLocally) setNoWifi(true, quiet = true)
+        // Turned on before, but the phone restarted since: switch it back on (once the phone is free).
+        if (adb.noWifiMode && !adb.connectedLocally) pendingNoWifi = true
     }
 
     private val noWifiDialogText = "HyperDebloat stays connected after you turn Wi-Fi off, until the phone restarts. " +
@@ -304,6 +365,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setNoWifi(on: Boolean, quiet: Boolean = false) {
         if (!working.compareAndSet(false, true)) return
         viewModelScope.launch {
+            phoneLock.lock()
             try {
                 if (on) {
                     if (!quiet && !ask("Work without Wi-Fi?", noWifiDialogText, yes = "Turn on", no = "Cancel")) return@launch
@@ -317,7 +379,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _noWifi.value = adb.noWifiMode
             } finally {
+                phoneLock.unlock()
                 working.set(false)
+                _progress.value = null
                 _screen.value = Screen.Home
                 if (!adb.isConnected) { _screen.value = Screen.Setup; refreshSetup() }
             }
@@ -339,8 +403,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (!ask("Not a Xiaomi phone", "The lists are made for Xiaomi, Redmi and POCO phones. Continue anyway?", warning = true)) return null
             }
             deviceKey = dev.key
-            needScan = true
             rows = null
+            needScan = true
+            // Results from earlier today survive the app being closed in the background.
+            ScanCache.load(storage, dev.key)?.let { saved ->
+                rows = saved.rows
+                needScan = false
+                _lastScan.value = saved.shownTime
+                _counts.value = Tier.entries.associateWith { t -> saved.rows.count { it.tier == t } }
+                logger.line("Using the check from ${saved.shownTime}")
+            }
         }
         engine = Engine(shell, storage, logger, dev.sdk, version).also { it.deviceDir = dev.deviceDir }
         _device.value = dev
@@ -358,8 +430,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         busy("Connecting to your phone")
         adb.debug("Action: ${action.name.lowercase()}")
         viewModelScope.launch {
+            phoneLock.lock()
             try {
-                val dev = connectPhone() ?: return@launch
+                val dev = try {
+                    connectPhone()
+                } catch (e: Exception) {
+                    // Reading the phone's details failed: say so on the home screen instead of closing the app.
+                    _scanError.value = e.message ?: e.javaClass.simpleName
+                    errorReport(e, "Connect")
+                    null
+                } ?: return@launch
                 if (action == Action.RESCAN || (action != Action.RESTORE && (needScan || rows == null))) {
                     try {
                         rows = scan(dev)
@@ -384,7 +464,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     notice("$name stopped", "Nothing after this point was done.\n\n" + errorReport(e, name), true)
                 }
             } finally {
+                phoneLock.unlock()
                 working.set(false)
+                _progress.value = null
                 updateGuide()
                 if (_screen.value != Screen.Setup) _screen.value = Screen.Home
             }
@@ -392,11 +474,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun scan(dev: DeviceInfo): List<Row> {
-        busy("Checking your phone")
+        busy("Checking your phone", 0f, 0.05f)
         val eng = engine!!
         step("Scanning the phone (read-only)")
         val sc = Scanner(shell, logger)
         var sets = io { sc.packageSets() }
+        progress("Checking if removed apps came back", 0.05f, 0.2f)
         logger.line("${sets.all.size} packages installed (${sets.system.size} system)")
         val (msg, changed) = try {
             io { eng.cameBackCheck(sets.all) }
@@ -406,10 +489,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (msg != null) notice("Removed apps came back", msg, true)
         if (changed) sets = io { sc.packageSets() }
+        progress("Reading app details", 0.2f, 0.9f)
         // The lists load at the same time as the phone is read.
         val lists = viewModelScope.async(Dispatchers.IO) { CommunityLists.buildIndex(CommunityLists.load(storage, fetcher, logger)) }
         val facts = try { io { sc.deviceFacts(sets.all) } } catch (e: Exception) { lists.cancel(); throw e }
         step("Comparing with the debloat lists")
+        progress("Comparing with the debloat lists", 0.92f)
         val idx = lists.await()
         val result = Classifier.classify(idx, sets, facts, getApplication<Application>().packageName)
         step("Classification")
@@ -420,6 +505,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _counts.value = Tier.entries.associateWith { t -> result.count { it.tier == t } }
         _lastScan.value = SimpleDateFormat("HH:mm", Locale.US).format(Date())
         needScan = false
+        try { io { ScanCache.save(storage, dev.key, System.currentTimeMillis(), _lastScan.value, result) } } catch (_: Exception) { }
+        progress("Done", 1f)
         justRestarted = false
         return result
     }
@@ -483,11 +570,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun removePackages(items: List<Row>) {
         val eng = engine!!
-        busy("Removing ${items.size} apps")
+        busy("Removing ${items.size} apps", 0f, 0.85f)
         step("Removing ${items.size} package(s)")
         val results = io {
-            eng.removeFirstPass(items) { i, n, it, res -> logger.line("  [$i/$n] ${it.pkg}  ${eng.shownResult(res)}") }
+            eng.removeFirstPass(items) { i, n, it, res ->
+                logger.line("  [$i/$n] ${it.pkg}  ${eng.shownResult(res)}")
+                subProgress(i.toFloat() / n)
+            }
         }
+        progress("Checking the result", 0.85f)
 
         // Fallback for apps HyperOS refuses to remove this way: the phone's own uninstall screen.
         val failed = eng.notRemoved(results)
@@ -532,10 +623,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val picked = pick(PickSpec("Bring apps back", items, "Restore selected", false, "", false, simple = true,
             intro = "Tick the apps you want back, then tap Restore."))
         if (picked.isEmpty()) return
-        busy("Restoring ${picked.size} apps")
+        busy("Restoring ${picked.size} apps", 0f, 1f)
         val lost = ArrayList<String>()
         val restored = ArrayList<String>()
-        for (it in picked) {
+        for ((n, it) in picked.withIndex()) {
+            subProgress(n.toFloat() / picked.size)
             val (ok, text) = io { eng.restoreOne(it) }
             logger.line("  ${it.pkg}  $text")
             if (ok) restored.add(it.pkg)
@@ -560,9 +652,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun restartNow() {
         if (!working.compareAndSet(false, true)) return
         viewModelScope.launch {
+            phoneLock.lock()
             try {
                 if (ask("Restart now?", "Your phone will restart. Open HyperDebloat again afterwards.", yes = "Restart", no = "Cancel")) reboot()
             } finally {
+                phoneLock.unlock()
                 working.set(false)
                 updateGuide()
             }

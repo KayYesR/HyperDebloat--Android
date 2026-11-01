@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.foundation.layout.fillMaxSize
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import io.github.kayyesr.hyperdebloat.core.DeviceInfo
@@ -114,6 +115,28 @@ class ScreenshotTest {
         )
         shot("4_restore") { PickContent(PickSpec("Bring apps back", restore, "Restore selected", false, "", false, simple = true,
             intro = "Tick the apps you want back, then tap Restore."), apps) {} }
+    }
+
+    @Test fun progressBar() {
+        shot("7_setup_reconnect_with_bar") {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
+                SetupContent(SetupStep.WIRELESS_DEBUGGING, false, "", {}, {}, {}, {}, {}, {}, paired = true)
+                ProgressStrip(barFor(Screen.Setup, null, false, false, SetupStep.WIRELESS_DEBUGGING),
+                    androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
+            }
+        }
+        shot("7_reconnecting") {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
+                ReconnectingContent()
+                ProgressStrip(Progress("Reconnecting"), androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
+            }
+        }
+        shot("7_busy_with_bar") {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
+                BusyContent("Checking your phone", listOf("== Scanning the phone (read-only)", "  Read 3.1 of 7.4 MB"))
+                ProgressStrip(Progress("Reading app details", 0.47f), androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
+            }
+        }
     }
 
     @Test fun busy() {

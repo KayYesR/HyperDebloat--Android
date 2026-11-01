@@ -2,6 +2,7 @@ package io.github.kayyesr.hyperdebloat.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -235,7 +236,7 @@ Queries:
 }
 
 class EngineTest {
-    private class MemStorage : Storage {
+    class MemStorage : Storage {
         val files = HashMap<String, String>()
         override fun readText(path: String) = files[path]
         override fun writeText(path: String, text: String, export: Boolean) { files[path] = text }
@@ -290,5 +291,67 @@ class EngineTest {
     @Test(expected = IllegalArgumentException::class)
     fun packageNamesAreCheckedBeforeShellUse() {
         Engine(FakeShell(emptyMap()), MemStorage(), {}, 35, "test").removeOnePackage("com.a; reboot", false)
+    }
+}
+
+class MarkerLinesTest {
+    private val m = "__HD_END_abc__"
+
+    private fun run(chunks: List<String>): Pair<List<String>, Boolean> {
+        val out = ArrayList<String>()
+        val ml = MarkerLines(m)
+        for (c in chunks) {
+            val b = c.toByteArray(Charsets.UTF_8)
+            if (ml.feed(b, b.size) { out.add(it) }) return out to true
+        }
+        return out to false
+    }
+
+    @Test fun stopsAtMarkerEvenWhenSplitAcrossReads() {
+        val (lines, ended) = run(listOf("one\r\ntw", "o\nthree\n__HD_E", "ND_abc__\nignored\n"))
+        assertTrue(ended)
+        assertEquals(listOf("one", "two", "three"), lines)
+    }
+
+    @Test fun markerAfterLastLineWithoutLineBreak() {
+        val (lines, ended) = run(listOf("Success", m + "\n"))
+        assertTrue(ended)
+        assertEquals(listOf("Success"), lines)
+    }
+
+    @Test fun missingMarkerIsNotAnEnd() {
+        val (lines, ended) = run(listOf("a\nb\n"))
+        assertFalse(ended)
+        assertEquals(listOf("a", "b"), lines)
+    }
+
+    @Test fun multiByteCharacterSplitAcrossReads() {
+        val bytes = "café\n$m\n".toByteArray(Charsets.UTF_8)
+        val out = ArrayList<String>()
+        val ml = MarkerLines(m)
+        val cut = 4 // inside the two-byte é
+        assertFalse(ml.feed(bytes.copyOfRange(0, cut), cut) { out.add(it) })
+        val rest = bytes.copyOfRange(cut, bytes.size)
+        assertTrue(ml.feed(rest, rest.size) { out.add(it) })
+        assertEquals(listOf("café"), out)
+    }
+}
+
+class ScanCacheTest {
+    @Test fun savesAndLoadsForTheSamePhoneOnly() {
+        val st = EngineTest.MemStorage()
+        val rows = listOf(
+            Row(Tier.MOSTLY, "MOSTLY OK", "com.miui.analytics", "Analytics \"quoted\"\nline", "green", "UAD", "why",
+                userApp = false, category = "Ads & tracking", atSetup = true, note = "n"),
+            Row(Tier.UNSAFE, "UNSAFE", "com.android.vending", "", "", "", "", userApp = true, locked = true),
+        )
+        ScanCache.save(st, "model|build", 1000L, "10:30", rows)
+        val back = ScanCache.load(st, "model|build", now = 2000L)!!
+        assertEquals("10:30", back.shownTime)
+        assertEquals(rows, back.rows)
+        assertNull(ScanCache.load(st, "other|build", now = 2000L))
+        assertNull(ScanCache.load(st, "model|build", now = 1000L + ScanCache.MAX_AGE_MS + 1))
+        ScanCache.clear(st)
+        assertNull(ScanCache.load(st, "model|build", now = 2000L))
     }
 }

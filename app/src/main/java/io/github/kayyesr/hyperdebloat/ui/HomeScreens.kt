@@ -213,7 +213,7 @@ fun HomeContent(
                 OptionRow("Bring apps back", "Undo. Puts back apps removed by this app or any other tool.", onRestore)
                 OptionRow("Choose apps yourself", "For experienced users. Shows every app with its risk level.", onCustom)
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(BottomBarSpace))
         }
     }
 }
