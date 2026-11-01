@@ -51,7 +51,8 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           export HD_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
           VERSION="${GITHUB_REF_NAME#v}"
-          ./gradlew testDebugUnitTest assembleRelease -PversionName="$VERSION" -PversionCode="${{ github.run_number }}"
+          # Starts above 100 so releases always outrank the test builds (version code 9 and lower).
+          ./gradlew testDebugUnitTest assembleRelease -PversionName="$VERSION" -PversionCode="$((100 + ${{ github.run_number }}))"
           mv app/build/outputs/apk/release/app-release.apk "HyperDebloat-$VERSION.apk"
 
       - name: Publish GitHub release
