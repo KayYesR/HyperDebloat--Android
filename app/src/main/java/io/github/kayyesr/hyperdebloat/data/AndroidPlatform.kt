@@ -84,9 +84,9 @@ class AdbShell(
     private val fraction: (Float) -> Unit = {},
 ) : Shell {
     override fun stream(command: String, onLine: (String) -> Unit) {
-        if (!saveRaw()) { adb.shell(command, onLine); return }
+        if (!saveRaw()) { adb.shell(command, onLine = onLine); return }
         val raw = StringBuilder("##### adb shell $command\n")
-        adb.shell(command) { raw.append(it).append('\n'); onLine(it) }
+        adb.shell(command, onLine = { raw.append(it).append('\n'); onLine(it) })
         storage.appendText("raw_adb_output.txt", raw.append('\n').toString())
     }
 
@@ -98,7 +98,9 @@ class AdbShell(
         val tmp = "/data/local/tmp/hyperdebloat_${System.nanoTime()}.txt"
         val t0 = System.currentTimeMillis()
         try {
-            val info = run("$command > $tmp 2>/dev/null; wc -l < $tmp; wc -c < $tmp")
+            // This step prints nothing until the whole answer is saved, so it gets longer than the usual 30 s of silence.
+            val info = ArrayList<String>()
+            adb.shell("$command > $tmp 2>/dev/null; wc -l < $tmp; wc -c < $tmp", idleSec = 150) { info.add(it) }
             val lines = info.getOrNull(0)?.trim()?.toIntOrNull()
             val bytes = info.getOrNull(1)?.trim()?.toLongOrNull() ?: 0L
             if (lines == null) {
@@ -123,17 +125,25 @@ class AdbShell(
         }
     }
 
-    /** Small commands, up to four at a time, each on its own stream of the same connection. */
+    /**
+     * Small commands, up to four at a time, each on its own stream of the same connection. If one fails, the
+     * connection may have been reset under the others too, so every failed one is run again, one at a time.
+     */
     override fun runAll(commands: List<String>): Map<String, List<String>> {
         val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val results = LinkedHashMap<String, List<String>>()
+        val failed = ArrayList<String>()
         try {
             val futures = commands.associateWith { c -> pool.submit<List<String>> { run(c) } }
-            return futures.mapValues { (_, f) -> f.get() }
-        } catch (e: java.util.concurrent.ExecutionException) {
-            throw e.cause ?: e
+            for ((c, f) in futures) {
+                try { results[c] = f.get() } catch (e: java.util.concurrent.ExecutionException) { failed.add(c) }
+            }
         } finally {
             pool.shutdownNow()
         }
+        if (failed.isNotEmpty()) adb.debug("Retrying ${failed.size} read(s) one at a time")
+        for (c in failed) results[c] = run(c)
+        return commands.associateWith { results[it] ?: emptyList() }
     }
 }
 

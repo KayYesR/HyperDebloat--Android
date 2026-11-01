@@ -99,7 +99,11 @@ class Engine(
      * Step 1: remove the packages (no freezing yet). Several removals go to the phone in one command, and one
      * package list afterwards checks which are really gone (some HyperOS versions answer Success and keep the app).
      */
-    fun removeFirstPass(items: List<Row>, progress: (Int, Int, Row, String) -> Unit): MutableList<Result> {
+    fun removeFirstPass(
+        items: List<Row>,
+        onChunk: (Int, Int) -> Unit = { _, _ -> },
+        progress: (Int, Int, Row, String) -> Unit,
+    ): MutableList<Result> {
         shell.run("logcat -G 16M")
         val updated = updatedSystemApps()
         val raw = HashMap<String, String>()
@@ -117,6 +121,7 @@ class Engine(
             }
             done += chunk.size
             log.line("Removed $done of ${items.size}...")
+            onChunk(done, items.size)
         }
         val stillThere = packageSet("pm list packages --user 0")
         val results = ArrayList<Result>()
@@ -205,7 +210,7 @@ class Engine(
         val frozen = results.filter { it.result.startsWith("Suspended", true) }
         val failed = results.filter { !isOk(it.result) }
         val failText = if (failed.isNotEmpty()) "\n\nNot removed, protected by HyperOS (${failed.size}):\n• " + failed.joinToString("\n• ") { it.pkg } else ""
-        val offText = if (frozen.isNotEmpty()) "\n\nFrozen instead (${frozen.size}): greyed out, can't open. Restore unfreezes them.\n• " +
+        val offText = if (frozen.isNotEmpty()) "\n\nFrozen instead (${frozen.size}): greyed out, can't open. Bring apps back unfreezes them.\n• " +
             frozen.joinToString("\n• ") { it.pkg } else ""
         log.line("Removed $removed, froze ${frozen.size}, of ${results.size}. Log saved: $logFile")
         return Summary(removed, frozen.size, results.size, failText, offText, logFile)
@@ -283,7 +288,7 @@ class Engine(
         var msg = ""
         if (done.isNotEmpty()) msg += "Dealt with:\n• " + done.joinToString("\n• ")
         if (notDone.isNotEmpty()) msg += "\n\nCould not remove or freeze:\n• " + notDone.joinToString("\n• ")
-        msg += "\n\nAn app that comes back twice gets frozen. If you reinstalled one yourself, use Restore so it is left alone."
+        msg += "\n\nAn app that comes back twice gets frozen. If you reinstalled one yourself, use Bring apps back so it is left alone."
         return msg.trim() to true
     }
 
@@ -384,7 +389,7 @@ class Engine(
         }
         for (p in state.suspended.sortedWith(String.CASE_INSENSITIVE_ORDER)) {
             items.add(Row(Tier.SAFE, "UNFREEZE", p, describe(p), "installed but frozen (suspended) for your user", "",
-                "frozen by HyperDebloat because it kept coming back", action = RestoreAction.UNSUSPEND))
+                "frozen earlier (HyperDebloat freezes apps the phone would not remove, or that kept coming back)", action = RestoreAction.UNSUSPEND))
         }
         return items
     }

@@ -8,6 +8,7 @@ import io.github.muntashirakon.adb.AdbStream
 import io.github.muntashirakon.adb.android.AndroidUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -62,11 +63,60 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     /** Also sends connection steps to the progress screen's details. */
     @Volatile var echo: ((String) -> Unit)? = null
 
+    /** Connection steps also go to connection_log.txt (Reports), so they survive Android closing the app. */
+    private val logFile = File(File(context.filesDir, "HyperDebloat").apply { mkdirs() }, "connection_log.txt")
+    private val logDay = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+
     fun debug(line: String) {
-        val l = "${timeFmt.format(java.util.Date())}  $line"
-        _debug.value = (_debug.value + l).takeLast(60)
+        val now = java.util.Date()
+        val l = "${timeFmt.format(now)}  $line"
+        // Several threads log at once; update() never drops a line.
+        _debug.update { (it + l).takeLast(60) }
         echo?.invoke(line)
         android.util.Log.i("HyperDebloat", line)
+        synchronized(logFile) {
+            try {
+                logFile.appendText("${logDay.format(now)}  $line\n")
+                // Keep the file small: past 200 KB, only the newer half is kept.
+                if (logFile.length() > 200_000) {
+                    val text = logFile.readText()
+                    logFile.writeText(text.substring(text.length / 2).substringAfter('\n'))
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
+    /** Whether Wireless debugging is switched on, read from the phone's settings (null if it cannot be read). */
+    fun wirelessDebuggingOn(): Boolean? = try {
+        android.provider.Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled") == 1
+    } catch (_: Exception) { null }
+
+    /**
+     * Notes in the log when Wi-Fi drops or connects and when Wireless debugging is switched on or off. Android switches
+     * Wireless debugging off when Wi-Fi disconnects or moves to another access point; this shows when that happened.
+     * Only listens while the app is alive; it never keeps the app or the phone awake.
+     */
+    private fun watchConnection() {
+        try {
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+            val req = android.net.NetworkRequest.Builder().addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI).build()
+            cm.registerNetworkCallback(req, object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) { debug("Wi-Fi connected") }
+                override fun onLost(network: android.net.Network) { debug("! Wi-Fi dropped (Android switches Wireless debugging off when this happens)") }
+            })
+        } catch (e: Exception) { android.util.Log.w("HyperDebloat", "Wi-Fi watch failed: $e") }
+        try {
+            val uri = android.provider.Settings.Global.getUriFor("adb_wifi_enabled")
+            context.contentResolver.registerContentObserver(uri, false, object : android.database.ContentObserver(null) {
+                override fun onChange(selfChange: Boolean) {
+                    when (wirelessDebuggingOn()) {
+                        true -> debug("Wireless debugging switched on")
+                        false -> debug("! Wireless debugging switched off")
+                        null -> { }
+                    }
+                }
+            })
+        } catch (e: Exception) { android.util.Log.w("HyperDebloat", "Wireless debugging watch failed: $e") }
     }
 
     private val connectFinder by lazy { PortFinder(context, PortFinder.CONNECT, ::debug) }
@@ -87,6 +137,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
     init {
         setApi(Build.VERSION.SDK_INT)
         setTimeout(20, TimeUnit.SECONDS)
+        watchConnection()
     }
 
     // A fresh key object each time: the library destroys the key it was given when a connection closes.
@@ -188,7 +239,12 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
         val ports = listOf(connectFinder.port).filter { it > 0 && it != saved }
         if (ports.isEmpty()) {
             _state.value = State.NOT_REACHABLE
-            _lastError.value = "Wireless debugging not found yet. Check it is switched on."
+            _lastError.value = when (wirelessDebuggingOn()) {
+                false -> "Wireless debugging is off. Android switches it off when Wi-Fi drops or changes."
+                true -> "Wireless debugging is on. Still looking for it..."
+                null -> "Wireless debugging not found yet. Check it is switched on."
+            }
+            debug(_lastError.value)
             return false
         }
         for (p in ports) {
@@ -374,7 +430,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
      * still queued, which is why long outputs used to stall at their very end. No end line means the answer was cut
      * short, which is an error, never a quiet half result.
      */
-    fun shell(command: String, onLine: (String) -> Unit) {
+    fun shell(command: String, idleSec: Long = 30, onLine: (String) -> Unit) {
         var lastError: Exception? = null
         var delivered = 0L
         for (attempt in 0..1) {
@@ -384,7 +440,7 @@ class AdbManager private constructor(private val context: Context) : AbsAdbConne
             try {
                 // A new line, not ";", so a command that already ends in ";" or "&" still works.
                 stream = openGuarded("shell:$command\necho $marker")
-                readUntilMarker(stream, marker) { delivered++; onLine(it) }
+                readUntilMarker(stream, marker, idleSec) { delivered++; onLine(it) }
                 return
             } catch (e: Exception) {
                 lastError = e

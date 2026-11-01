@@ -68,7 +68,9 @@ class PairingService : Service() {
             ACTION_PAIR -> {
                 showForeground(notification("Pairing...", null, withReply = false))
                 val code = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_CODE)?.toString().orEmpty()
-                worker.execute { pair(code) }
+                worker.execute {
+                    try { pair(code) } catch (_: InterruptedException) { /* closing */ }
+                }
             }
             else -> {
                 showForeground(notification("Waiting for the pairing code",
@@ -92,9 +94,15 @@ class PairingService : Service() {
             // Keep looking for up to 10 minutes while the user finds the setting.
             val deadline = System.currentTimeMillis() + 10 * 60_000L
             var port = -1
-            while (port <= 0 && System.currentTimeMillis() < deadline && searching) {
-                port = AdbManager.get(this).findPairingPort(15_000)
+            try {
+                while (port <= 0 && System.currentTimeMillis() < deadline && searching) {
+                    port = AdbManager.get(this).findPairingPort(15_000)
+                }
+            } catch (_: InterruptedException) {
+                // Cancelled (the service is closing): stop quietly. Letting this escape would close the whole app.
+                return@execute
             }
+            if (!searching) return@execute
             searching = false
             if (port > 0) {
                 _port.value = port

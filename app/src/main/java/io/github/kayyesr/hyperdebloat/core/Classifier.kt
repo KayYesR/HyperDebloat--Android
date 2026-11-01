@@ -58,6 +58,12 @@ object Classifier {
         "com.google.android.wifi.resources" to "keeps the Wi-Fi connection that wireless debugging runs over",
     )
 
+    /** Locked in every list, Custom included: removing them breaks installing, updating and running most apps. */
+    val ALWAYS_KEEP = mapOf(
+        "com.android.vending" to "the Play Store installs and updates your apps",
+        "com.google.android.gms" to "most apps need Google Play services to work",
+    )
+
     private val I = setOf(RegexOption.IGNORE_CASE)
 
     class Verdict(
@@ -223,10 +229,11 @@ object Classifier {
             var min = ess.minTier
             note = ess.note
             if (pkg.equals("com.android.chrome", true)) {
-                if (f.defaultBrowser) {
-                    min = 2
-                    note = "Chrome is your default browser. Set another browser as default first."
-                } else note = "You use another browser as default, so Chrome can be removed."
+                note = when {
+                    f.defaultBrowser -> { min = 2; "Chrome is your default browser. Set another browser as default first." }
+                    facts.values.any { it.defaultBrowser } -> "You use another browser as default, so Chrome can be removed."
+                    else -> "No default browser is set. Remove Chrome only if you have another browser."
+                }
             }
             if (tier == 0 || tier < min) {
                 tier = min
@@ -288,9 +295,13 @@ object Classifier {
         )
     }
 
-    /** Locks packages HyperDebloat needs while it runs (Android version only). */
+    /** Locks the Play Store, Play services, and packages HyperDebloat needs while it runs (Android version only). */
     private fun lockIfNeeded(row: Row): Row {
-        val why = NEEDED_ON_PHONE[row.pkg.lowercase()] ?: return row
+        val k = row.pkg.lowercase()
+        ALWAYS_KEEP[k]?.let { why ->
+            return row.copy(tier = Tier.UNSAFE, risk = Tier.UNSAFE.label, locked = true, reason = row.reason + "; locked: $why")
+        }
+        val why = NEEDED_ON_PHONE[k] ?: return row
         return row.copy(
             tier = Tier.UNSAFE, risk = Tier.UNSAFE.label, locked = true,
             reason = row.reason + "; locked: HyperDebloat needs it while it runs on the phone ($why)",

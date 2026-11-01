@@ -202,8 +202,11 @@ Queries:
         assertEquals(Tier.MODERATE, chrome.tier)
         assertTrue(chrome.note.contains("default browser"))
         assertEquals("Essential Google apps", chrome.category)
-        // Another browser is default: Chrome may be removed.
+        // No default browser at all: careful advice, not "you use another browser".
         facts["com.android.chrome"]!!.defaultBrowser = false
+        assertTrue(Classifier.rating("com.android.chrome", true, idx, facts)!!.note.contains("No default browser"))
+        // Another browser is default: Chrome may be removed.
+        facts["org.mozilla.firefox"] = PackageFacts().apply { seen = true; defaultBrowser = true }
         assertTrue(Classifier.rating("com.android.chrome", true, idx, facts)!!.note.contains("can be removed"))
 
         // Gmail: never ticked (userApp), advice to keep if used. Play Store: always unsafe.
@@ -211,6 +214,17 @@ Queries:
         assertTrue(gmail.userApp)
         assertTrue(gmail.note.contains("don't use Gmail"))
         assertEquals(Tier.UNSAFE, Classifier.rating("com.android.vending", true, idx, facts)!!.tier)
+    }
+
+    @Test fun playStoreAndServicesAreLockedEvenInCustom() {
+        val sets = Scanner.PackageSets(linkedMapOf("com.android.vending" to "com.android.vending", "com.google.android.gms" to "com.google.android.gms"),
+            hashSetOf("com.android.vending", "com.google.android.gms"))
+        val facts = HashMap<String, PackageFacts>()
+        for (p in sets.all.keys) facts[p] = PackageFacts().apply { seen = true; partition = "product" }
+        val idx = ListIndex().apply { for (p in sets.all.keys) { uad[p] = ListEntry(1, "Recommended", ""); fadeltd[p] = ListEntry(1, "safe", ""); ovsky[p] = ListEntry(1, "phase1_safe", "") } }
+        val rows = Classifier.classify(idx, sets, facts, "io.github.kayyesr.hyperdebloat")
+        assertEquals(2, rows.size)
+        assertTrue(rows.all { it.locked && it.tier == Tier.UNSAFE })
     }
 
     @Test fun categories() {

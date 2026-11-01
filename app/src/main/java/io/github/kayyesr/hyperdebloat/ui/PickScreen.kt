@@ -199,7 +199,7 @@ fun PickContent(spec: PickSpec, apps: AppLookup, onDone: (List<PkgRow>) -> Unit)
             Box(Modifier.weight(1f)) {
                 if (visible.isEmpty()) {
                     Text(
-                        if (search.isBlank()) "Nothing here." else "No match for \"${search.trim()}\".\n${spec.noMatchHint.ifEmpty { "Removed apps are under Restore." }}",
+                        if (search.isBlank()) "Nothing here." else "No match for \"${search.trim()}\".\n${spec.noMatchHint.ifEmpty { "Removed apps are under Bring apps back." }}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     )
                 }

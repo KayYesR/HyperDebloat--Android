@@ -183,11 +183,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var engine: Engine? = null
     private var rows: List<Row>? = null
     private var needScan = true
-        set(v) {
-            field = v
-            // Results saved from before a removal or restore are out of date.
-            if (v) try { ScanCache.clear(storage) } catch (_: Exception) { }
-        }
+
+    /** After a removal or restore the check no longer matches the phone, so the saved copy is dropped too. */
+    private fun scanOutdated() {
+        needScan = true
+        try { ScanCache.clear(storage) } catch (_: Exception) { }
+    }
+
+    /** Set once an action starts changing the phone; until then a failed action leaves the check as it was. */
+    @Volatile private var phoneChanged = false
     private var deviceKey = ""
 
     init {
@@ -301,6 +305,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun goSetupIfHome() { if (_screen.value == Screen.Home) _screen.value = Screen.Setup }
+
+    /**
+     * The connection was lost in the middle of something: show the setup screen at the step that is really off,
+     * so it never opens on an old step (such as notifications) for a moment.
+     */
+    private fun showReconnect() {
+        _setupStep.value = when {
+            !devOptionsOn() -> SetupStep.DEV_OPTIONS
+            !wifiConnected() && !adb.noWifiMode -> SetupStep.WIFI
+            adb.state.value == AdbManager.State.NOT_PAIRED -> SetupStep.PAIR
+            else -> SetupStep.WIRELESS_DEBUGGING
+        }
+        _screen.value = Screen.Setup
+    }
     @Volatile private var pendingNoWifi = false
 
     fun startPairing() = PairingService.start(getApplication())
@@ -383,16 +401,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 working.set(false)
                 _progress.value = null
                 _screen.value = Screen.Home
-                if (!adb.isConnected) { _screen.value = Screen.Setup; refreshSetup() }
+                if (!adb.isConnected) { showReconnect(); refreshSetup() }
             }
         }
     }
 
     /** Reads the phone's details. Returns null if not connected or the user gives up. */
     private suspend fun connectPhone(): DeviceInfo? {
-        if (adb.state.value != AdbManager.State.CONNECTED && !io { adb.tryConnect() }) {
-            _screen.value = Screen.Setup
-            refreshSetup()
+        if (adb.state.value != AdbManager.State.CONNECTED && !io { adb.tryConnect(wireless = wifiConnected()) }) {
+            showReconnect()
             return null
         }
         val dev = io { Scanner(shell, logger).deviceInfo() }
@@ -406,7 +423,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             rows = null
             needScan = true
             // Results from earlier today survive the app being closed in the background.
-            ScanCache.load(storage, dev.key)?.let { saved ->
+            io { ScanCache.load(storage, dev.key) }?.let { saved ->
                 rows = saved.rows
                 needScan = false
                 _lastScan.value = saved.shownTime
@@ -431,13 +448,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         adb.debug("Action: ${action.name.lowercase()}")
         viewModelScope.launch {
             phoneLock.lock()
+            phoneChanged = false
             try {
                 val dev = try {
                     connectPhone()
                 } catch (e: Exception) {
-                    // Reading the phone's details failed: say so on the home screen instead of closing the app.
-                    _scanError.value = e.message ?: e.javaClass.simpleName
-                    errorReport(e, "Connect")
+                    // Reading the phone's details failed: say so instead of closing the app.
+                    val msg = errorReport(e, "Connect")
+                    if (needScan || rows == null) _scanError.value = e.message ?: e.javaClass.simpleName
+                    else notice("Could not reach your phone", msg, true)
                     null
                 } ?: return@launch
                 if (action == Action.RESCAN || (action != Action.RESTORE && (needScan || rows == null))) {
@@ -459,16 +478,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 } catch (e: Exception) {
                     // One failed action must not close the app: report it and go back to the home screen.
-                    needScan = true
                     val name = action.name.lowercase().replaceFirstChar { it.uppercase() }
-                    notice("$name stopped", "Nothing after this point was done.\n\n" + errorReport(e, name), true)
+                    val details = errorReport(e, name)
+                    if (phoneChanged) scanOutdated()
+                    if (!adb.isConnected) {
+                        // The connection dropped (usually Wireless debugging was switched off when Wi-Fi changed).
+                        notice("Connection lost", (if (phoneChanged) "Some apps may already have been changed. Check your phone again after reconnecting."
+                            else "Nothing was changed, and your check is kept. Reconnect, then carry on.") + "\n\n" + details, true)
+                    } else notice("$name stopped", "Nothing after this point was done.\n\n$details", true)
                 }
             } finally {
                 phoneLock.unlock()
                 working.set(false)
                 _progress.value = null
                 updateGuide()
-                if (_screen.value != Screen.Setup) _screen.value = Screen.Home
+                // Lost the connection: the setup screen reconnects (and shows what to switch back on).
+                if (!adb.isConnected) showReconnect() else if (_screen.value != Screen.Setup) _screen.value = Screen.Home
             }
         }
     }
@@ -517,7 +542,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ord = items.filter { it.ordinary }.map { appName(it.pkg) }
         var s = ""
         if (apps.isNotEmpty()) s += "\n\nApps you may use:\n• " + apps.joinToString("\n• ") + "\nPress Cancel if you want to keep any of them."
-        if (ord.isNotEmpty()) s += "\n\nFully uninstalled (Restore can only open the Play Store):\n• " + ord.joinToString("\n• ")
+        if (ord.isNotEmpty()) s += "\n\nFully uninstalled (Bring apps back can only open the Play Store):\n• " + ord.joinToString("\n• ")
         return s
     }
 
@@ -537,7 +562,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "", false, simple = true,
             intro = "Safe junk is already ticked. Check each section, untick anything you want to keep, then tap Remove."))
         if (picked.isEmpty()) { logger.line("Back. Nothing was removed."); return }
-        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
+        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Bring apps back.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)
     }
 
@@ -558,13 +583,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val grey = picked.filter { it.tier == Tier.FLAGGED }
         if (grey.isNotEmpty()) {
             val names = grey.joinToString("\n• ") { appName(it.pkg) }
-            if (!ask("${grey.size} unknown selected", "• $names\n\nNo list knows what these do. If something breaks, use Restore.",
+            if (!ask("${grey.size} unknown selected", "• $names\n\nNo list knows what these do. If something breaks, use Bring apps back.",
                     yes = "Remove anyway", no = "Skip them", warning = true)) {
                 picked = picked.filter { it.tier != Tier.FLAGGED }
             }
         }
         if (picked.isEmpty()) return
-        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Restore.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
+        if (!ask("Remove ${picked.size} apps?", "You can bring them back with Bring apps back.${iconAppNote(picked)}", yes = "Remove", no = "Cancel")) return
         removePackages(picked)
     }
 
@@ -572,10 +597,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val eng = engine!!
         busy("Removing ${items.size} apps", 0f, 0.85f)
         step("Removing ${items.size} package(s)")
+        phoneChanged = true
         val results = io {
-            eng.removeFirstPass(items) { i, n, it, res ->
+            eng.removeFirstPass(items, onChunk = { done, total -> subProgress(done.toFloat() / total) }) { i, n, it, res ->
                 logger.line("  [$i/$n] ${it.pkg}  ${eng.shownResult(res)}")
-                subProgress(i.toFloat() / n)
             }
         }
         progress("Checking the result", 0.85f)
@@ -585,7 +610,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (failed.isNotEmpty()) {
             val names = failed.joinToString("\n• ") { appName(it.pkg) }
             if (ask("${failed.size} apps are protected", "• $names\n\nTry the phone's own uninstall screen? You tap OK for each one. " +
-                    "This uninstalls fully, so Restore may not bring them back.", yes = "Try", no = "Skip")) {
+                    "This uninstalls fully, so Bring apps back may not restore them.", yes = "Try", no = "Skip")) {
                 for (r in failed) {
                     if (!io { eng.openPhoneUninstall(r) }) continue
                     logger.line("  ${r.pkg}: uninstall screen opened")
@@ -598,7 +623,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         io { eng.freezeCameStraightBack(results) }
         val s = io { eng.finishRemoval(results) }
         if (s.removed + s.frozen > 0) {
-            needScan = true
+            scanOutdated()
             restartPending = true
             if (ask("Removed ${s.removed} of ${s.total}", "${s.frozenText}${s.failText}\n\nRestart the phone now? Then check calls, camera, GPS, payments and fingerprint.".trimStart(),
                     yes = "Restart", no = "Later")) reboot()
@@ -624,6 +649,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             intro = "Tick the apps you want back, then tap Restore."))
         if (picked.isEmpty()) return
         busy("Restoring ${picked.size} apps", 0f, 1f)
+        phoneChanged = true
         val lost = ArrayList<String>()
         val restored = ArrayList<String>()
         for ((n, it) in picked.withIndex()) {
@@ -633,7 +659,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (ok) restored.add(it.pkg)
             else if (it.action == RestoreAction.INSTALL || it.action == RestoreAction.STORE) lost.add(it.pkg)
         }
-        needScan = true
+        scanOutdated()
         io { eng.forgetRestored(restored) }
         for (p in lost) {
             if (ask("Reinstall from Play Store?", "${appName(p)} was fully uninstalled. Open its Play Store page? Your data was kept.", yes = "Open", no = "Skip")) {

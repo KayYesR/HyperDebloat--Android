@@ -28,6 +28,8 @@ class PortFinder(context: Context, private val type: String, private val log: (S
     @Volatile private var started = false
     private val queue = ConcurrentLinkedQueue<NsdServiceInfo>()
     private val resolving = AtomicBoolean(false)
+    /** Name of the announcement the port came from. */
+    @Volatile private var foundName: String? = null
 
     private val discovery = object : NsdManager.DiscoveryListener {
         override fun onDiscoveryStarted(serviceType: String) { started = true; log("Looking for $type") }
@@ -41,8 +43,11 @@ class PortFinder(context: Context, private val type: String, private val log: (S
             resolveNext()
         }
         override fun onServiceLost(info: NsdServiceInfo) {
+            // Only this phone's service counts; another device on the Wi-Fi going away changes nothing.
+            if (info.serviceName != foundName) return
             log("$type gone (${info.serviceName})")
             port = -1
+            foundName = null
         }
     }
 
@@ -60,6 +65,7 @@ class PortFinder(context: Context, private val type: String, private val log: (S
         if (!running.compareAndSet(true, false)) return
         try { nsd.stopServiceDiscovery(discovery) } catch (_: Exception) { }
         port = -1
+        foundName = null
     }
 
     @Suppress("DEPRECATION")
@@ -70,14 +76,19 @@ class PortFinder(context: Context, private val type: String, private val log: (S
             nsd.resolveService(info, object : NsdManager.ResolveListener {
                 override fun onResolveFailed(si: NsdServiceInfo, errorCode: Int) {
                     log("! Could not read ${si.serviceName} (error $errorCode)")
-                    // Error 3 = already active: try again shortly.
-                    if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) queue.add(si)
+                    // Error 3 = already active: try again after a short pause (not straight away, which floods the log).
+                    if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) {
+                        queue.add(si)
+                        Thread { Thread.sleep(500); resolving.set(false); resolveNext() }.apply { isDaemon = true }.start()
+                        return
+                    }
                     resolving.set(false); resolveNext()
                 }
                 override fun onServiceResolved(si: NsdServiceInfo) {
                     val host = si.host?.hostAddress
                     if (host != null && isThisPhone(host)) {
                         port = si.port
+                        foundName = si.serviceName
                         log("Found $type on this phone: port ${si.port}")
                     } else {
                         log("Ignored $type from another device ($host)")
